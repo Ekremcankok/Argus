@@ -7,7 +7,7 @@ const FAM = {discovery:'Keşif',portscan:'Port & Servis',quickcve:'Hızlı CVE',
   smb:'SMB / NetBIOS',ad:'Active Directory',kerberos:'Kerberos',
   poison:'Ağ Zehirleme / Relay',postcred:'Kimlikli Post-Enum'};
 const FAM_ORDER = ['discovery','portscan','quickcve','smb','ad','kerberos','postcred','poison'];
-const BASE_MODULES = ['discovery','portscan']; // her zaman çalışan temel keşif
+const BASE_MODULES = ['discovery','portscan','report']; // temel keşif + her koşuda rapor
 
 const S = { modules:[], builtNames:new Set(), catalog:[], status:'idle', activeJob:null };
 
@@ -80,10 +80,11 @@ async function viewScanDetail(id){
         <div class="dh-sub">${credLine} · <span class="mono">${esc((d.include||[]).join(', '))}</span> · ${fmtTime(d.started_at)}${d.dry_run?' · <span class="chip">dry-run</span>':''}</div>
         ${d.description?`<div class="muted" style="margin-top:4px">${esc(d.description)}</div>`:''}
       </div>
-      <div>${
+      <div class="row" style="gap:8px">${
         d.status==='running' ? `<button class="danger" onclick="stopScan()">■ Durdur</button>`
         : d.status==='saved' ? `<button class="primary" onclick="launchScan('${id}')">▶ Taramayı Başlat</button>`
-        : `<button onclick="launchScan('${id}')">⟳ Yeniden Çalıştır</button>`
+        : `${d.total>0?`<a class="btn" href="/api/scans/${id}/report" target="_blank">📄 Rapor</a>`:''}
+           <button onclick="launchScan('${id}')">⟳ Yeniden Çalıştır</button>`
       }</div>
     </div>
     <div class="tabs">

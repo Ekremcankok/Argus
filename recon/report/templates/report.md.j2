@@ -1,0 +1,57 @@
+# İç Ağ Sızma Testi — Recon Raporu
+
+**{{ meta.name }}** · {{ meta.generated_at }} · recon {{ meta.tool_version }}
+
+- **Kapsam:** {{ meta.scope_include|join(', ') }}
+- **Hariç:** {{ meta.scope_exclude|join(', ') or '—' }}
+- **Mod:** {{ meta.mode }}{% if meta.dry_run %} (dry-run){% endif %}
+- **Kimlik:** {{ meta.credential or 'anonim' }}
+- **Canlı host:** {{ meta.host_count }}
+
+> ⚠ Bulgular **aday bulgulardır** — araç tespit eder, hiçbiri "doğrulandı" sayılmaz.
+> Sömürü, doğrulama ve false-positive eleme operatöre aittir. "MANUEL" maddeler elle yürütülür.
+
+## Yönetici Özeti
+
+| Önem | Adet |
+|------|-----:|
+{% for s in sev_order %}| {{ s|sev_tr }} | {{ severity_counts.get(s, 0) }} |
+{% endfor %}| **Toplam** | **{{ total }}** |
+| Hızlı kazanım | {{ quick_wins|length }} |
+| Manuel aksiyon | {{ manual_actions|length }} |
+
+{% if quick_wins %}
+## ⚡ Hızlı Kazanımlar
+
+| Önem | Bulgu | Host | Araç |
+|------|-------|------|------|
+{% for f in quick_wins %}| {{ f.severity|sev_tr }} | {{ f.title }}{% if f.manual_followup %} [MANUEL]{% endif %} | `{{ f.host }}{% if f.port %}:{{ f.port }}{% endif %}` | {{ f.source_tool }} |
+{% endfor %}
+{% endif %}
+
+{% if manual_actions %}
+## 👤 Operatör Aksiyon Listesi (manuel)
+
+| Önem | Bulgu | Host | Neden |
+|------|-------|------|-------|
+{% for f in manual_actions %}| {{ f.severity|sev_tr }} | {{ f.title }} | `{{ f.host }}` | {{ f.notes }} |
+{% endfor %}
+{% endif %}
+
+## Host Bazlı Detay
+
+{% for h in hosts %}
+### {{ h.ip }}{% if h.hostname %} ({{ h.hostname }}){% endif %}
+{% if h.os %}*{{ h.os }}*{% endif %}{% if h.roles %} — roller: {{ h.roles|join(', ') }}{% endif %}
+
+{% for f in h.findings %}
+- **[{{ f.severity|sev_tr }}]** {{ f.title }}{% if f.port %} (:{{ f.port }}){% endif %}{% if f.manual_followup %} `MANUEL`{% endif %} — _{{ f.source_tool }}_
+{% if f.notes %}  - {{ f.notes }}
+{% endif %}
+{% if f.catalog and f.catalog.remediation %}  - **Çözüm:** {{ f.catalog.remediation|trim }}
+{% endif %}
+{% endfor %}
+{% endfor %}
+
+---
+recon {{ meta.tool_version }} · Toplam {{ total }} aday bulgu · tespit odaklı, sömürü operatöre aittir.

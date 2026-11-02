@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from ..config import Config, Credential, Mode
-from ..findings import Finding
+from ..findings import Finding, FindingStore
 from ..inventory import Inventory
 from ..runner import Runner
 from ..scope import ScopeGuard
@@ -27,6 +27,7 @@ class ModuleContext:
     output_dir: Path                       # <çıktı>/<tarih>/ kökü
     progress: Callable[[str, str], None]   # (module_name, mesaj) canlı ilerleme
     plugins: Optional[set[str]] = None     # seçili plugin (kb_id) kümesi; None = hepsi
+    store: Optional[FindingStore] = None   # tüm bulgular (rapor modülü okur)
 
     def plugin_enabled(self, kb_id: str) -> bool:
         """Bir kontrolün (plugin) bu taramada seçili olup olmadığı."""

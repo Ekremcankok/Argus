@@ -361,6 +361,16 @@ def create_app(base_config_path: str | Path = "config.yaml") -> FastAPI:
             h["finding_count"] = per.get(ip, 0)
         return inv
 
+    @app.get("/api/scans/{job_id}/report")
+    def scan_report(job_id: str):
+        j = mgr.get(job_id)
+        if not j or not j.run_dir:
+            raise HTTPException(404, "tarama bulunamadı")
+        p = Path(j.run_dir) / "report.html"
+        if not p.exists():
+            raise HTTPException(404, "rapor henüz üretilmedi (tarama tamamlanmalı)")
+        return FileResponse(p)
+
     # ── zafiyet kataloğu ──
     @app.get("/api/catalog")
     def catalog():

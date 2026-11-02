@@ -133,7 +133,48 @@ def build_parser() -> argparse.ArgumentParser:
                     help="GÜVENLİK: paneli localhost dışına aç (dikkat!)")
     pw.set_defaults(func=_cmd_serve)
 
+    prp = sub.add_parser("report", help="mevcut koşudan raporu yeniden üret")
+    prp.add_argument("run", help="koşu dizini (örn. output/2026-11-02)")
+    prp.add_argument("-c", "--config", default="config.yaml")
+    prp.set_defaults(func=_cmd_report)
+
     return p
+
+
+def _cmd_report(args) -> int:
+    import json as _json
+    from .findings import FindingStore
+    from .report import build_report
+    from .scope import ScopeGuard
+
+    run_dir = Path(args.run)
+    db = run_dir / "findings.sqlite"
+    if not db.exists():
+        print(f"bulunamadı: {db}", file=sys.stderr)
+        return 1
+    store = FindingStore(db)
+    findings = store.ranked()
+    inv = {}
+    invf = run_dir / "inventory.json"
+    if invf.exists():
+        inv = _json.loads(invf.read_text(encoding="utf-8"))
+
+    cfg = load_config(args.config) if Path(args.config).exists() else None
+    guard = ScopeGuard(cfg.scope) if cfg else None
+    meta = {
+        "name": run_dir.name,
+        "scope_include": guard.include_cidrs if guard else [],
+        "scope_exclude": guard.exclude_cidrs if guard else [],
+        "mode": cfg.mode.value if cfg else "safe",
+        "dry_run": False,
+        "credential": cfg.credentials[0].principal if (cfg and cfg.credentials) else None,
+        "host_count": len(inv.get("hosts", {})),
+    }
+    res = build_report(findings, inv, meta, run_dir)
+    print(f"rapor üretildi: {res['html']}")
+    print(f"  markdown: {res['md']}")
+    print(f"  json:     {res['json']}")
+    return 0
 
 
 def _cmd_serve(args) -> int:

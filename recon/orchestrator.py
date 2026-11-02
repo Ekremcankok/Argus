@@ -120,7 +120,7 @@ class Orchestrator:
                 config=self.config, scope=self.scope, runner=self.runner,
                 inventory=self.inventory, output_dir=self.run_dir,
                 progress=lambda m, msg: self._progress(m, "running", msg),
-                plugins=self.plugins,
+                plugins=self.plugins, store=self.store,
             )
 
             reason = mod.requires(ctx)

@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>İç Ağ Recon Raporu — {{ meta.name }}</title>
+<style>
+  :root{
+    --fg:#1a2230; --muted:#5b6b7f; --line:#e2e8f0; --bg:#f7f9fc; --card:#fff;
+    --crit:#dc2626; --high:#ea580c; --med:#ca8a04; --low:#0891b2; --info:#64748b;
+    --crit-bg:#fef2f2; --high-bg:#fff7ed; --med-bg:#fefce8; --low-bg:#ecfeff; --info-bg:#f1f5f9;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);
+    font:14px/1.6 -apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+  .wrap{max-width:960px;margin:0 auto;padding:32px 24px 64px}
+  header.rpt{border-bottom:3px solid var(--fg);padding-bottom:16px;margin-bottom:24px}
+  header.rpt h1{font-size:23px;margin:0 0 4px}
+  header.rpt .sub{color:var(--muted);font-size:13px}
+  .meta{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:4px 24px;
+    margin-top:14px;font-size:13px}
+  .meta div span{color:var(--muted)}
+  h2.sec{font-size:15px;margin:34px 0 14px;padding-bottom:7px;border-bottom:1px solid var(--line);
+    text-transform:uppercase;letter-spacing:.04em}
+  .tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:12px;margin-bottom:8px}
+  .tile{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px;
+    border-left:4px solid var(--info)}
+  .tile .n{font-size:26px;font-weight:800;line-height:1}
+  .tile .l{font-size:11px;color:var(--muted);text-transform:uppercase;margin-top:6px;letter-spacing:.03em}
+  .tile.critical{border-left-color:var(--crit)} .tile.critical .n{color:var(--crit)}
+  .tile.high{border-left-color:var(--high)} .tile.high .n{color:var(--high)}
+  .tile.medium{border-left-color:var(--med)} .tile.medium .n{color:var(--med)}
+  .tile.low{border-left-color:var(--low)} .tile.low .n{color:var(--low)}
+  .tile.info{border-left-color:var(--info)} .tile.info .n{color:var(--info)}
+  .tile.accent{border-left-color:#2563eb} .tile.accent .n{color:#2563eb}
+  .callout{background:#fff7ed;border:1px solid #fed7aa;border-left:4px solid var(--high);
+    border-radius:8px;padding:12px 16px;margin:16px 0;font-size:13px;color:#7c2d12}
+  table{width:100%;border-collapse:collapse;background:var(--card);border:1px solid var(--line);
+    border-radius:10px;overflow:hidden;font-size:13px}
+  th{text-align:left;background:#f1f5f9;color:var(--muted);font-size:11px;text-transform:uppercase;
+    letter-spacing:.04em;padding:9px 12px;border-bottom:1px solid var(--line)}
+  td{padding:9px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+  tr:last-child td{border-bottom:none}
+  .sev{display:inline-block;font-size:10.5px;font-weight:800;text-transform:uppercase;
+    padding:2px 7px;border-radius:4px;letter-spacing:.03em;white-space:nowrap}
+  .sev.critical{color:var(--crit);background:var(--crit-bg)}
+  .sev.high{color:var(--high);background:var(--high-bg)}
+  .sev.medium{color:var(--med);background:var(--med-bg)}
+  .sev.low{color:var(--low);background:var(--low-bg)}
+  .sev.info{color:var(--info);background:var(--info-bg)}
+  .mono{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12.5px}
+  .tag{display:inline-block;font-size:11px;padding:1px 7px;border-radius:4px;background:#eef2f7;
+    color:var(--muted);margin:1px}
+  .tag.manual{background:var(--high-bg);color:var(--high)}
+  .tag.cve{background:var(--crit-bg);color:var(--crit)}
+  .tag.mitre{background:#eff6ff;color:#2563eb}
+  .host{background:var(--card);border:1px solid var(--line);border-radius:10px;margin-bottom:16px;overflow:hidden}
+  .host-h{padding:12px 16px;background:#f1f5f9;border-bottom:1px solid var(--line);
+    display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+  .host-h .ip{font-weight:800;font-family:ui-monospace,Menlo,Consolas,monospace}
+  .host-h .os{color:var(--muted);font-size:12.5px}
+  .finding{padding:14px 16px;border-bottom:1px solid var(--line)}
+  .finding:last-child{border-bottom:none}
+  .finding .ft{display:flex;align-items:center;gap:9px;flex-wrap:wrap}
+  .finding .ft .title{font-weight:650}
+  .finding .fnotes{color:var(--muted);font-size:12.5px;margin-top:5px}
+  details{margin-top:9px;background:var(--bg);border:1px solid var(--line);border-radius:7px}
+  summary{cursor:pointer;padding:8px 12px;font-size:12.5px;font-weight:600;color:var(--muted)}
+  details[open] summary{border-bottom:1px solid var(--line)}
+  .kb{padding:12px}
+  .kb h4{margin:0 0 4px;font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:#2563eb}
+  .kb p{margin:0 0 12px;white-space:pre-line;font-size:13px}
+  .kb a{color:#2563eb;word-break:break-all}
+  footer.rpt{margin-top:40px;padding-top:16px;border-top:1px solid var(--line);
+    color:var(--muted);font-size:12px}
+  @media print{body{background:#fff}.host,.tile,table{break-inside:avoid}details{display:none}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="rpt">
+    <h1>İç Ağ Sızma Testi — Recon Raporu</h1>
+    <div class="sub">{{ meta.name }} · {{ meta.generated_at }}</div>
+    <div class="meta">
+      <div><span>Kapsam:</span> <span class="mono">{{ meta.scope_include|join(', ') }}</span></div>
+      <div><span>Hariç:</span> <span class="mono">{{ meta.scope_exclude|join(', ') or '—' }}</span></div>
+      <div><span>Mod:</span> {{ meta.mode }}{% if meta.dry_run %} (dry-run){% endif %}</div>
+      <div><span>Kimlik:</span> {{ meta.credential or 'anonim' }}</div>
+      <div><span>Canlı host:</span> {{ meta.host_count }}</div>
+      <div><span>Araç sürümü:</span> recon {{ meta.tool_version }}</div>
+    </div>
+  </header>
+
+  <h2 class="sec">Yönetici Özeti</h2>
+  <div class="tiles">
+    {% for s in sev_order %}
+    <div class="tile {{ s }}"><div class="n">{{ severity_counts.get(s, 0) }}</div>
+      <div class="l">{{ s|sev_tr }}</div></div>
+    {% endfor %}
+    <div class="tile accent"><div class="n">{{ quick_wins|length }}</div><div class="l">Hızlı Kazanım</div></div>
+    <div class="tile high"><div class="n">{{ manual_actions|length }}</div><div class="l">Manuel Aksiyon</div></div>
+  </div>
+  <div class="callout">
+    <b>Uyarı:</b> Bu rapordaki bulgular <b>aday bulgulardır</b> — araç tespit eder,
+    hiçbiri "doğrulandı" sayılmaz. Sömürü, doğrulama ve false-positive eleme operatöre aittir.
+    "MANUEL" etiketli maddeler yıkıcı/yargı gerektiren işlemler olup elle yürütülmelidir.
+  </div>
+
+  {% if quick_wins %}
+  <h2 class="sec">⚡ Hızlı Kazanımlar</h2>
+  <table>
+    <thead><tr><th>Önem</th><th>Bulgu</th><th>Host</th><th>Kanıt</th></tr></thead>
+    <tbody>
+    {% for f in quick_wins %}
+      <tr>
+        <td><span class="sev {{ f.severity }}">{{ f.severity|sev_tr }}</span></td>
+        <td>{{ f.title }}{% if f.manual_followup %} <span class="tag manual">MANUEL</span>{% endif %}</td>
+        <td class="mono">{{ f.host }}{% if f.port %}:{{ f.port }}{% endif %}</td>
+        <td class="mono" style="font-size:11.5px">{{ f.source_tool }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+
+  {% if manual_actions %}
+  <h2 class="sec">👤 Operatör Aksiyon Listesi (manuel)</h2>
+  <table>
+    <thead><tr><th>Önem</th><th>Bulgu</th><th>Host</th><th>Neden manuel</th></tr></thead>
+    <tbody>
+    {% for f in manual_actions %}
+      <tr>
+        <td><span class="sev {{ f.severity }}">{{ f.severity|sev_tr }}</span></td>
+        <td>{{ f.title }}</td>
+        <td class="mono">{{ f.host }}</td>
+        <td class="mono" style="font-size:12px;color:var(--muted)">{{ f.notes }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+
+  <h2 class="sec">Host Bazlı Detay</h2>
+  {% for h in hosts %}
+  <div class="host">
+    <div class="host-h">
+      <span class="ip">{{ h.ip }}</span>
+      {% if h.hostname %}<span>{{ h.hostname }}</span>{% endif %}
+      {% if h.os %}<span class="os">{{ h.os }}</span>{% endif %}
+      {% for r in h.roles %}<span class="tag">{{ r }}</span>{% endfor %}
+      <span style="margin-left:auto;color:var(--muted);font-size:12px">{{ h.findings|length }} bulgu</span>
+    </div>
+    {% for f in h.findings %}
+    <div class="finding">
+      <div class="ft">
+        <span class="sev {{ f.severity }}">{{ f.severity|sev_tr }}</span>
+        <span class="title">{{ f.title }}</span>
+        {% if f.port %}<span class="mono" style="color:var(--muted)">:{{ f.port }}</span>{% endif %}
+        <span class="tag">{{ f.confidence }}</span>
+        {% if f.manual_followup %}<span class="tag manual">MANUEL</span>{% endif %}
+        <span style="margin-left:auto;color:var(--muted);font-size:11.5px" class="mono">{{ f.source_tool }}</span>
+      </div>
+      {% if f.notes %}<div class="fnotes">{{ f.notes }}</div>{% endif %}
+      {% if f.catalog %}
+      <details>
+        <summary>Katalog: açıklama · sömürü yolu · çözüm</summary>
+        <div class="kb">
+          {% set c = f.catalog %}
+          <div style="margin-bottom:10px">
+            {% for v in c.cve or [] %}<span class="tag cve">{{ v }}</span>{% endfor %}
+            {% for v in c.mitre or [] %}<span class="tag mitre">{{ v }}</span>{% endfor %}
+          </div>
+          {% if c.description %}<h4>Açıklama</h4><p>{{ c.description }}</p>{% endif %}
+          {% if c.exploitation %}<h4>Sömürü yolu</h4><p>{{ c.exploitation }}</p>{% endif %}
+          {% if c.remediation %}<h4>Çözüm önerisi</h4><p>{{ c.remediation }}</p>{% endif %}
+          {% if c.references %}<h4>Referanslar</h4><p>{% for r in c.references %}<a href="{{ r }}">{{ r }}</a><br>{% endfor %}</p>{% endif %}
+        </div>
+      </details>
+      {% endif %}
+      {% if f.evidence_path %}<div class="mono" style="font-size:11px;color:var(--muted);margin-top:6px">kanıt: {{ f.evidence_path }}</div>{% endif %}
+    </div>
+    {% endfor %}
+  </div>
+  {% endfor %}
+
+  <footer class="rpt">
+    recon {{ meta.tool_version }} · {{ meta.generated_at }} ·
+    Yetkili sızma testi aracı — tespit odaklı, sömürü operatöre aittir.
+    Toplam {{ total }} aday bulgu.
+  </footer>
+</div>
+</body>
+</html>

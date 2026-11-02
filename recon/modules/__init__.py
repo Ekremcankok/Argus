@@ -14,6 +14,7 @@ _BUILTIN = [
     "recon.modules.quickcve",
     "recon.modules.smb",
     "recon.modules.ad",
+    "recon.modules.report",
 ]
 
 
