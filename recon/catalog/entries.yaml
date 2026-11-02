@@ -1153,3 +1153,43 @@ attack-path:
   references:
     - "https://bloodhound.specterops.io/"
     - "https://book.hacktricks.xyz/windows-hardening/active-directory-methodology"
+
+local-admin:
+  title: "Kimlik bilgisi birden çok makinede yerel admin"
+  severity: high
+  category: cred
+  phase: postcred
+  manual_only: true
+  tags: [lateral, postcred]
+  summary: "Elde edilen kimlik bir veya daha çok hostta yerel yönetici → yatay hareket."
+  description: >
+    Spray/roast/relay/paylaşımdan elde edilen (veya verilen) kimlik bilgisi,
+    birden çok makinede yerel admin yetkisine sahip. Bu yatay hareket ve
+    kimlik bilgisi/secret toplama (LSASS/SAM) imkânı demektir.
+  exploitation: >
+    MANUEL — nxc ile Pwn3d! işaretli hostlarda komut yürütme (wmiexec/psexec),
+    secretsdump (LSASS/SAM) yalnız kapsam izin veriyorsa ve opt-in.
+  remediation: >
+    Yerel admin paylaşımını azaltın (LAPS), ayrıcalıklı kimlikleri Tier bazında
+    ayırın, yeniden-kullanılan parolaları engelleyin.
+  references:
+    - "https://book.hacktricks.xyz/windows-hardening/ntlm"
+
+password-spray:
+  title: "Password spray yüzeyi (lockout-aware)"
+  severity: medium
+  category: config
+  phase: kerberos
+  manual_only: true
+  tags: [spray, kerberos]
+  summary: "Numaralandırılan kullanıcılar + lockout politikası → kontrollü spray yüzeyi."
+  description: >
+    Domain kullanıcıları numaralandırıldı ve parola politikası okundu. Spray
+    için güvenli deneme bütçesi hesaplanabilir; ama parola/kural seçimi ve
+    zamanlama yargı gerektirir.
+  exploitation: >
+    KESİNLİKLE MANUEL ve lockout-aware — eşik okunmadan asla denenmez. Operatör
+    tek parola/pencere ile sınırlı dener (nxc --continue-on-success YOK, throttle).
+  remediation: "Güçlü parola politikası, makul lockout, sık parolaları yasakla, MFA."
+  references:
+    - "https://book.hacktricks.xyz/windows-hardening/active-directory-methodology/password-spraying"
