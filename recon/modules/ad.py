@@ -43,6 +43,32 @@ def parse_esc(output: str) -> set[int]:
     return {int(n) for n in _RE_ESC.findall(output)}
 
 
+# impacket-findDelegation tablo satırı: Account  Type  DelegationType  RightsTo
+_RE_DELEG = re.compile(
+    r"^(\S+)\s+(?:USER|COMPUTER)\s+(Unconstrained|Constrained(?: w/ Protocol Transition)?|"
+    r"Resource-Based Constrained)\s+(.*)$", re.M | re.I)
+
+
+def parse_delegation(output: str) -> list[tuple[str, str, str]]:
+    """findDelegation çıktısından (hesap, delegasyon_tipi, hedef) üçlüleri."""
+    out = []
+    for acct, dtype, rights in _RE_DELEG.findall(output):
+        out.append((acct, dtype.strip(), rights.strip()))
+    return out
+
+
+def parse_descriptions(output: str) -> list[tuple[str, str]]:
+    """nxc get-desc-users çıktısından (kullanıcı, description) çiftleri (boş olmayan)."""
+    out = []
+    for line in output.splitlines():
+        m = re.search(r"User:\s*(\S+)\s+description:\s*(.+?)\s*$", line, re.I)
+        if m:
+            user, desc = m.group(1), m.group(2).strip()
+            if desc and desc.lower() not in ("(null)", "none", "-"):
+                out.append((user, desc))
+    return out
+
+
 def parse_maq(output: str) -> Optional[int]:
     m = _RE_MAQ.search(output)
     return int(m.group(1)) if m else None
@@ -69,7 +95,8 @@ class ADModule(Module):
     ESC_KBS = {k for k in load_catalog() if k.startswith("adcs-esc")}
     PLUGINS = {"kerberoastable", "asrep-roastable", "gpp-cpassword",
                "machineaccountquota", "weak-password-policy", "description-password",
-               "unconstrained-delegation"} | ESC_KBS
+               "unconstrained-delegation", "constrained-delegation",
+               "laps-readable", "gmsa-readable"} | ESC_KBS
 
     def requires(self, ctx: ModuleContext) -> Optional[str]:
         if not ctx.inventory.dc_candidates():
@@ -109,6 +136,10 @@ class ADModule(Module):
         findings += self._maq(ctx, dc, cred, out_dir)
         findings += self._passpol(ctx, dc, cred, out_dir)
         findings += self._adcs(ctx, dc, cred, out_dir)
+        findings += self._delegation(ctx, dc, cred, out_dir)
+        findings += self._descriptions(ctx, dc, cred, out_dir)
+        findings += self._laps(ctx, dc, cred, out_dir)
+        findings += self._gmsa(ctx, dc, cred, out_dir)
 
         log.info("%d AD bulgusu", len(findings))
         ctx.progress(self.name, f"{len(findings)} bulgu")
@@ -255,3 +286,115 @@ class ADModule(Module):
                 evidence_path=str((out_dir / "adcs.txt").as_posix()),
                 notes=f"certipy ESC{n} işaretledi — sömürü manuel (katalog)."))
         return out
+
+    # ── Delegasyon (impacket-findDelegation) ──
+    def _delegation(self, ctx, dc, cred, out_dir):
+        if not (ctx.plugin_enabled("unconstrained-delegation")
+                or ctx.plugin_enabled("constrained-delegation")):
+            return []
+        tool = impacket_tool("findDelegation")
+        if not tool:
+            return []
+        target, extra = self._impacket_target(cred)
+        res = ctx.runner.run([tool, target, "-dc-ip", dc, *extra],
+                             timeout=180, raw_path=out_dir / "delegation.txt")
+        if res.skipped:
+            return []
+        ev = str((out_dir / "delegation.txt").as_posix())
+        out = []
+        for acct, dtype, rights in parse_delegation(res.stdout + res.stderr):
+            if "unconstrained" in dtype.lower():
+                if not ctx.plugin_enabled("unconstrained-delegation"):
+                    continue
+                out.append(Finding(
+                    host=dc, phase=self.name, category="config",
+                    title=f"Unconstrained delegation: {acct}",
+                    severity=Severity.high, confidence=Confidence.detected,
+                    exploitable=Exploitable.manual, manual_followup=True,
+                    source_tool="impacket", kb_id="unconstrained-delegation",
+                    evidence_path=ev, notes="Bilet hırsızlığı — coercion ile DC TGT (manuel)."))
+            else:  # Constrained / Resource-Based
+                if not ctx.plugin_enabled("constrained-delegation"):
+                    continue
+                out.append(Finding(
+                    host=dc, phase=self.name, category="config",
+                    title=f"Constrained delegation: {acct}",
+                    severity=Severity.high, confidence=Confidence.detected,
+                    exploitable=Exploitable.manual, manual_followup=True,
+                    source_tool="impacket", kb_id="constrained-delegation",
+                    evidence_path=ev,
+                    notes=f"{dtype} → {rights}. S4U ile hedef bilet (manuel)."))
+        return out
+
+    # ── description alanında parola (nxc get-desc-users) ──
+    def _descriptions(self, ctx, dc, cred, out_dir):
+        if not ctx.plugin_enabled("description-password"):
+            return []
+        nxc = nxc_binary()
+        if not nxc:
+            return []
+        res = ctx.runner.run([nxc, "ldap", dc, *nxc_auth(cred), "-M", "get-desc-users"],
+                             timeout=120, raw_path=out_dir / "descriptions.txt")
+        if res.skipped:
+            return []
+        ev = str((out_dir / "descriptions.txt").as_posix())
+        out = []
+        for user, desc in parse_descriptions(res.stdout + res.stderr):
+            out.append(Finding(
+                host=dc, phase=self.name, category="cred",
+                title=f"LDAP description'da olası parola: {user}",
+                severity=Severity.medium, confidence=Confidence.probable,
+                exploitable=Exploitable.manual, manual_followup=True,
+                source_tool="netexec", kb_id="description-password",
+                evidence_path=ev, notes=f"description: {desc}"))
+        return out
+
+    # ── LAPS okuma yetkisi (nxc -M laps) ──
+    def _laps(self, ctx, dc, cred, out_dir):
+        if not ctx.plugin_enabled("laps-readable"):
+            return []
+        nxc = nxc_binary()
+        if not nxc:
+            return []
+        res = ctx.runner.run([nxc, "ldap", dc, *nxc_auth(cred), "-M", "laps"],
+                             timeout=120, raw_path=out_dir / "laps.txt")
+        if res.skipped:
+            return []
+        txt = res.stdout + res.stderr
+        # Okunabilir LAPS parolası varsa nxc parolayı/işareti gösterir
+        if re.search(r"(Computer:|ms-?Mcs-?AdmPwd|LAPS? password)", txt, re.I) \
+                and "No result" not in txt and "0 result" not in txt:
+            return [Finding(
+                host=dc, phase=self.name, category="config",
+                title="LAPS parolası okunabilir (fazla yetki)",
+                severity=Severity.high, confidence=Confidence.detected,
+                exploitable=Exploitable.manual, manual_followup=True,
+                source_tool="netexec", kb_id="laps-readable",
+                evidence_path=str((out_dir / "laps.txt").as_posix()),
+                notes="Bu hesap LAPS yerel-admin parolasını okuyabiliyor.")]
+        return []
+
+    # ── gMSA okuma yetkisi (nxc --gmsa) ──
+    def _gmsa(self, ctx, dc, cred, out_dir):
+        if not ctx.plugin_enabled("gmsa-readable"):
+            return []
+        nxc = nxc_binary()
+        if not nxc:
+            return []
+        res = ctx.runner.run([nxc, "ldap", dc, *nxc_auth(cred), "--gmsa"],
+                             timeout=120, raw_path=out_dir / "gmsa.txt")
+        if res.skipped:
+            return []
+        txt = res.stdout + res.stderr
+        # Okunabilir gMSA: nxc 'Account:' + 'NTLM:' gösterir
+        if re.search(r"Account:\s*\S+.*NTLM:", txt, re.I | re.S) \
+                or re.search(r"gMSA.*NTLM:\s*[0-9a-f]{32}", txt, re.I):
+            return [Finding(
+                host=dc, phase=self.name, category="config",
+                title="gMSA parolası okunabilir (geniş yetki)",
+                severity=Severity.high, confidence=Confidence.detected,
+                exploitable=Exploitable.manual, manual_followup=True,
+                source_tool="netexec", kb_id="gmsa-readable",
+                evidence_path=str((out_dir / "gmsa.txt").as_posix()),
+                notes="Servis hesabı ele geçirme yüzeyi.")]
+        return []
