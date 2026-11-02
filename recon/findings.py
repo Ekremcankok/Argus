@@ -6,6 +6,7 @@ bulguyu verirse source_tool birleşir, en yüksek confidence tutulur.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 import threading
@@ -59,9 +60,11 @@ class Finding:
 
     @property
     def id(self) -> str:
-        # Dedupe anahtarı host+title; okunur bir id üretir.
-        slug = "".join(ch if ch.isalnum() else "-" for ch in self.title.lower())[:40]
-        return f"{slug}-{self.host}".strip("-")
+        # Dedupe anahtarı host+title. Okunur slug + tam-başlık hash'i:
+        # uzun/benzer başlıklar (ör. ACL satırları) çakışıp yanlış dedupe olmasın.
+        slug = "".join(ch if ch.isalnum() else "-" for ch in self.title.lower()).strip("-")[:40]
+        h = hashlib.sha1(self.title.encode("utf-8")).hexdigest()[:6]
+        return f"{slug}-{h}-{self.host}".strip("-")
 
     def to_row(self) -> dict:
         d = asdict(self)

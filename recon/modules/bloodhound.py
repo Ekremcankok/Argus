@@ -86,10 +86,17 @@ def analyze_bloodhound(objs: dict[str, list[dict]]) -> dict:
                 if name not in result["dcsync"]:
                     result["dcsync"].append(name)
 
-    # Tehlikeli ACE'ler + Shadow Credentials
+    # Tehlikeli ACE'ler + Shadow Credentials.
+    # Gürültü kesme: user/group/computer için yalnız YÜKSEK-DEĞER hedefteki
+    # (highvalue veya adminCount) ACE'ler; GPO/OU'da her yazma hakkı tehlikeli.
     for otype in ("users", "groups", "computers", "gpos", "ous"):
         for o in objs.get(otype, []):
-            target = (o.get("Properties") or {}).get("name") or o.get("ObjectIdentifier", "?")
+            props = o.get("Properties") or {}
+            target = props.get("name") or o.get("ObjectIdentifier", "?")
+            if otype in ("users", "groups", "computers"):
+                high = bool(props.get("highvalue")) or props.get("admincount") in (True, 1, "1")
+                if not high:
+                    continue
             for ace in o.get("Aces", []) or []:
                 sid = ace.get("PrincipalSID", "")
                 rn = ace.get("RightName", "")

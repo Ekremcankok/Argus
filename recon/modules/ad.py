@@ -43,28 +43,41 @@ def parse_esc(output: str) -> set[int]:
     return {int(n) for n in _RE_ESC.findall(output)}
 
 
-# impacket-findDelegation tablo satırı: Account  Type  DelegationType  RightsTo
+# impacket-findDelegation satırı: Account  Type(Person/Computer)  DelegationType  RightsTo  SPNExists
 _RE_DELEG = re.compile(
-    r"^(\S+)\s+(?:USER|COMPUTER)\s+(Unconstrained|Constrained(?: w/ Protocol Transition)?|"
-    r"Resource-Based Constrained)\s+(.*)$", re.M | re.I)
+    r"^(\S+)\s+\S+\s+(Unconstrained|Constrained(?: w/ Protocol Transition)?|"
+    r"Resource-Based Constrained)\s+(.+?)\s+(?:Yes|No)\s*$", re.M | re.I)
+
+# Açıklamada parola işareti: anahtar kelime VEYA karma (büyük+küçük+rakam) token
+_CRED_KW = re.compile(r"\b(pass(word)?|pwd?|parola|[şs]ifre|secret|credential|creds?)\b", re.I)
+_CRED_TOKEN = re.compile(r"(?=\S*[A-Z])(?=\S*[a-z])(?=\S*\d)\S{6,}")
 
 
 def parse_delegation(output: str) -> list[tuple[str, str, str]]:
-    """findDelegation çıktısından (hesap, delegasyon_tipi, hedef) üçlüleri."""
-    out = []
+    """findDelegation çıktısından (hesap, delegasyon_tipi, hedef); dedupe'lu."""
+    out, seen = [], set()
     for acct, dtype, rights in _RE_DELEG.findall(output):
+        key = (acct, "unconstrained" if "unconstrained" in dtype.lower() else "constrained")
+        if key in seen:
+            continue
+        seen.add(key)
         out.append((acct, dtype.strip(), rights.strip()))
     return out
 
 
+def desc_has_credential(desc: str) -> bool:
+    """Açıklama olası bir parola içeriyor mu (gürültü azaltma)."""
+    return bool(_CRED_KW.search(desc) or _CRED_TOKEN.search(desc))
+
+
 def parse_descriptions(output: str) -> list[tuple[str, str]]:
-    """nxc get-desc-users çıktısından (kullanıcı, description) çiftleri (boş olmayan)."""
+    """nxc get-desc-users çıktısından yalnız PAROLA-BENZERİ (user, description)."""
     out = []
     for line in output.splitlines():
         m = re.search(r"User:\s*(\S+)\s+description:\s*(.+?)\s*$", line, re.I)
         if m:
             user, desc = m.group(1), m.group(2).strip()
-            if desc and desc.lower() not in ("(null)", "none", "-"):
+            if desc and desc.lower() not in ("(null)", "none", "-") and desc_has_credential(desc):
                 out.append((user, desc))
     return out
 
@@ -306,13 +319,16 @@ class ADModule(Module):
             if "unconstrained" in dtype.lower():
                 if not ctx.plugin_enabled("unconstrained-delegation"):
                     continue
+                note = "Bilet hırsızlığı — coercion ile DC TGT (manuel)."
+                if acct.endswith("$"):
+                    note = "Makine hesabı — DC ise beklenen, member server ise kritik. " + note
                 out.append(Finding(
                     host=dc, phase=self.name, category="config",
                     title=f"Unconstrained delegation: {acct}",
                     severity=Severity.high, confidence=Confidence.detected,
                     exploitable=Exploitable.manual, manual_followup=True,
                     source_tool="impacket", kb_id="unconstrained-delegation",
-                    evidence_path=ev, notes="Bilet hırsızlığı — coercion ile DC TGT (manuel)."))
+                    evidence_path=ev, notes=note))
             else:  # Constrained / Resource-Based
                 if not ctx.plugin_enabled("constrained-delegation"):
                     continue
