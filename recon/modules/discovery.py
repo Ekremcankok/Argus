@@ -9,6 +9,7 @@ import xml.etree.ElementTree as ET
 
 from ..findings import Finding, Severity, Confidence, Exploitable
 from ..registry import register
+from ._tools import summarize
 from .base import Module, ModuleContext
 
 # TCP ping fallback portları (ICMP kapalıysa canlıları yakala)
@@ -62,7 +63,7 @@ class DiscoveryModule(Module):
                 exploitable=Exploitable.na,
                 evidence_path=str((out_dir / "discovery.txt").as_posix()),
                 source_tool="nmap", kb_id="live-hosts",
-                notes=", ".join(sorted(found)),
+                notes=summarize(sorted(found), 30),
             )]
         return []
 
