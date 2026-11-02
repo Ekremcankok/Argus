@@ -87,8 +87,11 @@ class QuickCVEModule(Module):
     default_enabled = True
 
     # Bu modülün ürettiği plugin (kb_id) kümesi
+    # NOT: SMBGhost (CVE-2020-0796) ve BlueKeep güvenilir uzaktan tespiti YOK —
+    # smbghost "compression capability" indicator'ı tüm modern Windows'ta true
+    # (yama durumunu göstermez, yanlış pozitif) → katalog-only (manuel).
     PLUGINS = {"ms17-010", "zerologon", "petitpotam", "printerbug", "dfscoerce",
-               "smbghost", "printnightmare", "nopac"}
+               "printnightmare", "nopac"}
 
     def requires(self, ctx: ModuleContext) -> Optional[str]:
         if not (ctx.inventory.hosts_with_port(445) or ctx.inventory.dc_candidates()):
@@ -108,10 +111,6 @@ class QuickCVEModule(Module):
             findings += self._zerologon(ctx, out_dir)
         if any(ctx.plugin_enabled(k) for k in ("petitpotam", "printerbug", "dfscoerce")):
             findings += self._coercion(ctx, out_dir)
-        if ctx.plugin_enabled("smbghost"):
-            findings += self._nxc_vuln(ctx, out_dir, "smbghost", "smbghost",
-                                       "SMBGhost (CVE-2020-0796) zafiyetli", Severity.critical,
-                                       "SMB 445 hostlar", port=445)
         if ctx.plugin_enabled("printnightmare"):
             findings += self._nxc_vuln(ctx, out_dir, "printnightmare", "printnightmare",
                                        "PrintNightmare (CVE-2021-34527) zafiyetli", Severity.high,
