@@ -122,6 +122,102 @@ def analyze_bloodhound(objs: dict[str, list[dict]]) -> dict:
     return result
 
 
+# Hedefi ele geçirmeye yarayan (traverse edilebilir) kenarlar
+_CONTROL_EDGES = _DANGEROUS | {"AddKeyCredentialLink"}
+
+
+def _build_graph(objs: dict[str, list[dict]]) -> dict[str, list[tuple[str, str]]]:
+    """principal_sid -> [(hedef_sid, kenar_etiketi)] yönlü graf."""
+    edges: dict[str, list[tuple[str, str]]] = {}
+
+    def add(a, b, label):
+        if a and b:
+            edges.setdefault(a, []).append((b, label))
+
+    # Grup üyeliği: üye --MemberOf--> grup
+    for g in objs.get("groups", []):
+        gsid = g.get("ObjectIdentifier")
+        for m in g.get("Members") or []:
+            add(m.get("ObjectIdentifier"), gsid, "MemberOf")
+    # Kontrol ACL'leri: principal --Right--> nesne (miras olmayanlar)
+    for t in ("users", "groups", "computers", "gpos", "ous", "domains"):
+        for o in objs.get(t, []):
+            osid = o.get("ObjectIdentifier")
+            for ace in o.get("Aces") or []:
+                if ace.get("IsInherited"):
+                    continue
+                rn = ace.get("RightName")
+                if rn in _CONTROL_EDGES:
+                    add(ace.get("PrincipalSID"), osid, rn)
+    # DCSync: principal --DCSync--> domain
+    for d in objs.get("domains", []):
+        per: dict[str, set] = {}
+        for ace in d.get("Aces") or []:
+            if ace.get("RightName") in _DCSYNC:
+                per.setdefault(ace.get("PrincipalSID"), set()).add(ace.get("RightName"))
+        for sid, rights in per.items():
+            if "DCSync" in rights or {"GetChanges", "GetChangesAll"} <= rights:
+                add(sid, d.get("ObjectIdentifier"), "DCSync")
+    return edges
+
+
+def _high_value_targets(objs: dict[str, list[dict]]) -> dict[str, str]:
+    """hedef_sid -> tür (Domain Admins / DC / Domain ...)."""
+    tgt: dict[str, str] = {}
+    for g in objs.get("groups", []):
+        sid = g.get("ObjectIdentifier", "")
+        if sid.endswith("-512"):
+            tgt[sid] = "Domain Admins"
+        elif sid.endswith("-519"):
+            tgt[sid] = "Enterprise Admins"
+        elif sid.endswith("-518"):
+            tgt[sid] = "Schema Admins"
+        elif sid.endswith("S-1-5-32-544"):
+            tgt[sid] = "Administrators"
+    for c in objs.get("computers", []):
+        if (c.get("Properties") or {}).get("highvalue"):
+            tgt[c.get("ObjectIdentifier", "")] = "DC / yüksek-değer host"
+    for d in objs.get("domains", []):
+        tgt[d.get("ObjectIdentifier", "")] = "Domain (DCSync)"
+    tgt.pop("", None)
+    return tgt
+
+
+def compute_paths(objs: dict[str, list[dict]], start_sids: list[str],
+                  sid2name: dict[str, str]) -> list[dict]:
+    """start principal'lerden yüksek-değer hedeflere en kısa saldırı yolları."""
+    from collections import deque
+    edges = _build_graph(objs)
+    targets = _high_value_targets(objs)
+    best: dict[tuple, dict] = {}
+    for start in start_sids:
+        parent = {start: None}
+        q = deque([start])
+        while q:
+            cur = q.popleft()
+            for nb, label in edges.get(cur, []):
+                if nb not in parent:
+                    parent[nb] = (cur, label)
+                    q.append(nb)
+        for tsid, kind in targets.items():
+            if tsid == start or tsid not in parent:
+                continue
+            hops, node = [], tsid
+            while parent[node] is not None:
+                pv, label = parent[node]
+                hops.append((sid2name.get(pv, pv), label, sid2name.get(node, node)))
+                node = pv
+            hops.reverse()
+            if not hops:
+                continue
+            key = (start, kind)
+            if key not in best or len(hops) < len(best[key]["hops"]):
+                best[key] = {"start": sid2name.get(start, start),
+                             "target": sid2name.get(tsid, tsid),
+                             "kind": kind, "hops": hops}
+    return sorted(best.values(), key=lambda r: len(r["hops"]))
+
+
 @register
 class BloodHoundModule(Module):
     name = "bloodhound"
@@ -132,7 +228,7 @@ class BloodHoundModule(Module):
     intrusive = False
     default_enabled = True
 
-    PLUGINS = {"dcsync-rights", "acl-abuse", "shadow-credentials"}
+    PLUGINS = {"dcsync-rights", "acl-abuse", "shadow-credentials", "attack-path"}
 
     def requires(self, ctx: ModuleContext) -> Optional[str]:
         if not ctx.inventory.dc_candidates():
@@ -214,6 +310,30 @@ class BloodHoundModule(Module):
                     source_tool="bloodhound-python", kb_id="shadow-credentials",
                     evidence_path=ev,
                     notes=f"{principal}, {target} msDS-KeyCredentialLink'ine yazabilir (PKINIT)."))
+
+        # ── Saldırı yolu: elimizdeki/geniş principal → yüksek-değer hedef ──
+        if ctx.plugin_enabled("attack-path"):
+            sid2name = _sid_name_map(objs)
+            name2sid = {v.upper(): k for k, v in sid2name.items() if v}
+            starts = []
+            up = (f"{cred.username}@{cred.domain}" if cred.domain else cred.username).upper()
+            if up in name2sid:
+                starts.append(name2sid[up])
+            # Domain Users (-513) + geniş principal'ler (varsa düğüm olarak)
+            for sid in sid2name:
+                if sid.endswith("-513") or sid in ("S-1-5-11", "S-1-1-0"):
+                    starts.append(sid)
+            for p in compute_paths(objs, list(dict.fromkeys(starts)), sid2name):
+                chain = f"{p['start']}"
+                for frm, lbl, to in p["hops"]:
+                    chain += f" --{lbl}--> {to}"
+                findings.append(Finding(
+                    host=dc, phase=self.name, category="config",
+                    title=f"Saldırı yolu: {p['start']} → {p['kind']} ({len(p['hops'])} adım)",
+                    severity=Severity.critical, confidence=Confidence.detected,
+                    exploitable=Exploitable.manual, manual_followup=True,
+                    source_tool="bloodhound-python", kb_id="attack-path",
+                    evidence_path=ev, notes=chain))
 
         log.info("%d BloodHound bulgusu", len(findings))
         ctx.progress(self.name, f"{len(findings)} bulgu")

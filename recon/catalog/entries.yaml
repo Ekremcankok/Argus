@@ -1126,3 +1126,30 @@ adcs-esc17:
   references:
     - "https://mustafanafizdurukan.github.io/posts/esc17-wsus-dns-abuse"
     - "https://github.com/ly4k/Certipy/wiki"
+
+attack-path:
+  title: "Saldırı yolu (düşük yetkiden yüksek-değere)"
+  severity: critical
+  category: config
+  phase: bloodhound
+  manual_only: true
+  tags: [bloodhound, privesc, path]
+  summary: "Sahip olunan/düşük yetkili principal'den Domain Admins / DC / domain ele geçirmeye giden çok-adımlı yol."
+  description: >
+    BloodHound grafiğinde, elimizdeki (ya da Domain Users gibi geniş) bir
+    principal'den yüksek-değer hedefe (Domain Admins, Enterprise Admins,
+    Administrators, DC, domain) ulaşan kenar zinciri bulundu. Her kenar
+    suistimal edilebilir bir hak (GenericAll, MemberOf, DCSync, WriteDacl,
+    ForceChangePassword vb.). Zincirin tamamlanması domain ele geçirmedir.
+  exploitation: >
+    MANUEL — yolun her adımı sırayla suistimal edilir (ör. GenericAll →
+    hedef parolasını sıfırla / Shadow Cred ekle; DCSync → secretsdump → krbtgt
+    → golden ticket). Adım seçimi, gürültü ve zamanlama operatör kararı.
+    BloodHound arayüzünde yol görselleştirilip doğrulanmalı.
+  remediation: >
+    Zincirdeki en zayıf kenarı kır: aşırı ACL'leri kaldır, DCSync/replikasyon
+    haklarını yalnız DC'lere bırak, ayrıcalıklı grup üyeliklerini azalt,
+    Tier-0 ayrımı uygula.
+  references:
+    - "https://bloodhound.specterops.io/"
+    - "https://book.hacktricks.xyz/windows-hardening/active-directory-methodology"
