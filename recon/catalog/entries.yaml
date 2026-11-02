@@ -1,0 +1,876 @@
+# Zafiyet Kataloğu — her kb_id bir bulgu türünü açıklar.
+# Alanlar: title, severity, category, cve, mitre, tags, phase, manual_only,
+#          summary, description, exploitation, remediation, references
+
+# ─────────────────────────────────────────────────────────────
+# SERVİS / ENVANTER (info — sömürü değil, bağlam)
+# ─────────────────────────────────────────────────────────────
+live-hosts:
+  title: "Canlı host envanteri"
+  severity: info
+  category: info
+  phase: discovery
+  manual_only: false
+  summary: "Kapsamda yanıt veren hostlar tespit edildi."
+  description: >
+    ICMP ve yaygın TCP portlarına ping ile canlı host listesi çıkarıldı.
+    Bu bir zafiyet değil; sonraki fazlar için hedef envanteridir.
+  remediation: >
+    Gereksiz hostların/servislerin ağ erişimini segmentasyon ve host
+    firewall ile kısıtlayın.
+  references:
+    - "https://nmap.org/book/host-discovery.html"
+
+smb-exposed:
+  title: "SMB servisi erişilebilir (445)"
+  severity: info
+  category: service
+  phase: portscan
+  manual_only: false
+  tags: [smb]
+  summary: "445/TCP açık — SMB numaralandırma ve relay yüzeyi."
+  description: >
+    SMB (445) açık. Tek başına zafiyet değil ama null session, signing,
+    SMBv1, paylaşım ve relay kontrollerinin yapılacağı ana yüzey.
+  remediation: >
+    SMB'yi yalnızca gerekli hostlara açın; SMB signing'i zorunlu kılın;
+    SMBv1'i kapatın.
+  references:
+    - "https://book.hacktricks.xyz/network-services-pentesting/pentesting-smb"
+
+rdp-exposed:
+  title: "RDP erişilebilir (3389)"
+  severity: low
+  category: service
+  phase: portscan
+  manual_only: false
+  tags: [rdp]
+  summary: "3389/TCP açık — NLA ve kaba kuvvet yüzeyi."
+  description: >
+    RDP açık. NLA kapalıysa BlueKeep ve kaba kuvvet yüzeyi genişler;
+    ağ içinde yanal hareket için sık kullanılır.
+  remediation: >
+    NLA'yı zorunlu kılın, RDP'yi yalnızca atlama (jump) hostlarına açın,
+    MFA/ağ seviyesinde erişim kontrolü uygulayın.
+  references:
+    - "https://book.hacktricks.xyz/network-services-pentesting/pentesting-rdp"
+
+mssql-exposed:
+  title: "MSSQL erişilebilir (1433)"
+  severity: low
+  category: service
+  phase: portscan
+  manual_only: false
+  tags: [mssql, db]
+  summary: "1433/TCP açık — kimlik ve linked-server zinciri yüzeyi."
+  description: >
+    MSSQL açık. Zayıf/varsayılan kimlik, xp_cmdshell ve linked-server
+    zincirleri ile komut yürütme/yanal hareket mümkün olabilir.
+  remediation: >
+    Güçlü kimlik, en az yetki, xp_cmdshell kapalı, linked-server
+    hesaplarını kısıtlayın.
+  references:
+    - "https://book.hacktricks.xyz/network-services-pentesting/pentesting-mssql-microsoft-sql-server"
+
+dc-detected:
+  title: "Domain Controller adayı"
+  severity: info
+  category: service
+  phase: portscan
+  manual_only: false
+  tags: [ad, dc]
+  summary: "Kerberos (88) + LDAP (389) açık — DC adayı."
+  description: >
+    Host, Kerberos ve LDAP portlarını açık tutuyor; büyük olasılıkla bir
+    Domain Controller. AD enum, coercion ve relay kontrollerinin merkezi.
+  remediation: >
+    DC'lerde LDAP/SMB signing + channel binding zorunlu olsun; gereksiz
+    servisleri (Spooler) kapatın.
+  references:
+    - "https://book.hacktricks.xyz/windows-hardening/active-directory-methodology"
+
+# ─────────────────────────────────────────────────────────────
+# HIZLI KAZANIM CVE'LERİ (tespit; exploit MANUEL)
+# ─────────────────────────────────────────────────────────────
+ms17-010:
+  title: "MS17-010 (EternalBlue)"
+  severity: critical
+  category: vuln
+  cve: [CVE-2017-0144]
+  mitre: [T1210]
+  phase: quickcve
+  manual_only: true
+  tags: [smb, rce]
+  summary: "SMBv1 uzaktan kod çalıştırma — yamasız sistemlerde SYSTEM."
+  description: >
+    SMBv1'deki bellek bozulması ile kimlik doğrulamasız uzaktan kod
+    çalıştırma. WannaCry/NotPetya'nın yayılma vektörü. Araç yalnızca
+    tespit eder (nmap smb-vuln-ms17-010 / nxc --vuln).
+  exploitation: >
+    MANUEL — exploit hedefi çökertebilir (BSOD). Operatör kararı:
+    Metasploit ms17_010_eternalblue veya AutoBlue ile, hedef/zamanlama
+    seçilerek, tek host üzerinde kontrollü denenir. Önce yedek/onay.
+  remediation: >
+    MS17-010 yamasını uygulayın; SMBv1'i tamamen kaldırın
+    (Windows özelliği). Eski (2008/7) EOL sistemleri izole edin.
+  references:
+    - "https://learn.microsoft.com/security-updates/securitybulletins/2017/ms17-010"
+
+ms08-067:
+  title: "MS08-067 (NetAPI)"
+  severity: critical
+  category: vuln
+  cve: [CVE-2008-4250]
+  phase: quickcve
+  manual_only: true
+  tags: [smb, rce, legacy]
+  summary: "Server servisinde uzaktan kod çalıştırma (çok eski sistemler)."
+  description: >
+    Server servisindeki RPC işlemesinde kimlik doğrulamasız RCE. Yalnızca
+    çok eski (XP/2003/2000) sistemlerde görülür.
+  exploitation: >
+    MANUEL — Metasploit ms08_067_netapi. Eski sistemlerde kararsızlık/çökme
+    riski; kontrollü denenir.
+  remediation: "MS08-067 yamasını uygulayın; EOL sistemleri emekliye ayırın."
+  references:
+    - "https://learn.microsoft.com/security-updates/securitybulletins/2008/ms08-067"
+
+smbghost:
+  title: "SMBGhost (CVE-2020-0796)"
+  severity: critical
+  category: vuln
+  cve: [CVE-2020-0796]
+  phase: quickcve
+  manual_only: true
+  tags: [smb, rce]
+  summary: "SMBv3.1.1 sıkıştırma bütünlük hatası — RCE/LPE."
+  description: >
+    SMBv3 sıkıştırma başlığı işlemesinde tamsayı taşması; uzaktan kod
+    çalıştırma ve yerel yetki yükseltme. Win10 1903/1909, Server 1903/1909.
+  exploitation: >
+    MANUEL — PoC'ler kararsız, hedefi çökertebilir. Sürüm/yama tespiti
+    yeterli; exploit operatör kararı.
+  remediation: "KB4551762 yamasını uygulayın; SMBv3 sıkıştırmayı devre dışı bırakın."
+  references:
+    - "https://learn.microsoft.com/security-updates/securitybulletins/2020/cve-2020-0796"
+
+bluekeep:
+  title: "BlueKeep (CVE-2019-0708)"
+  severity: critical
+  category: vuln
+  cve: [CVE-2019-0708]
+  phase: quickcve
+  manual_only: true
+  tags: [rdp, rce]
+  summary: "RDP ön-kimlik uzaktan kod çalıştırma (wormable)."
+  description: >
+    RDP (3389) kanal işlemesinde kimlik doğrulamasız RCE. 2008 R2/7 ve
+    öncesi. Tespit bile servisi riske atabilir — dikkatli NSE kullanılır.
+  exploitation: >
+    MANUEL — exploit sık BSOD üretir. Yalnızca kontrollü, onaylı ve tek
+    hedefte. Çoğu testte tespit + yama kanıtı yeterli kabul edilir.
+  remediation: "CVE-2019-0708 yamasını uygulayın; NLA zorunlu; RDP'yi kısıtlayın."
+  references:
+    - "https://learn.microsoft.com/security-updates/securitybulletins/2019/cve-2019-0708"
+
+zerologon:
+  title: "Zerologon (CVE-2020-1472)"
+  severity: critical
+  category: vuln
+  cve: [CVE-2020-1472]
+  mitre: [T1068]
+  phase: quickcve
+  manual_only: true
+  tags: [ad, dc, netlogon]
+  summary: "Netlogon kripto hatası — DC makine hesabı ele geçirme."
+  description: >
+    Netlogon (MS-NRPC) AES-CFB8 IV'sinin sıfır olması; kimlik doğrulamasız
+    saldırgan DC makine hesabı parolasını sıfırlayabilir. Araç yalnızca
+    zafiyet kontrolü yapar (non-exploit).
+  exploitation: >
+    KESİNLİKLE MANUEL — gerçek exploit DC makine hesabı parolasını '' yapar;
+    geri alınmazsa AD replikasyonu kırılır (domain bozulur). Yazılı onay +
+    hemen ardından parolayı restore (reinstall_original_pw) şart.
+  remediation: >
+    Ağustos 2020+ Netlogon yamalarını uygulayın; enforcement modunu açın
+    (FullSecureChannelProtection).
+  references:
+    - "https://www.secura.com/blog/zero-logon"
+
+printnightmare:
+  title: "PrintNightmare (CVE-2021-34527)"
+  severity: high
+  category: vuln
+  cve: [CVE-2021-34527, CVE-2021-1675]
+  phase: quickcve
+  manual_only: true
+  tags: [spooler, rce, lpe]
+  summary: "Print Spooler sürücü yüklemesiyle RCE/LPE."
+  description: >
+    Print Spooler'ın RpcAddPrinterDriver işlemesinde kimlikli kullanıcının
+    SYSTEM olarak kod çalıştırması. DC'de Spooler açıksa kritik.
+  exploitation: >
+    MANUEL — CVE-2021-34527 PoC (ör. impacket) ile. DC'lerde Spooler kapatma
+    önceliği; exploit operatör kararı.
+  remediation: >
+    Spooler'ı gereksiz yerlerde (özellikle DC) kapatın; Point-and-Print
+    kısıtlamalarını uygulayın; yamaları geçin.
+  references:
+    - "https://msrc.microsoft.com/update-guide/vulnerability/CVE-2021-34527"
+
+# ─────────────────────────────────────────────────────────────
+# COERCION / RELAY YÜZEYİ (tespit; relay zinciri MANUEL)
+# ─────────────────────────────────────────────────────────────
+petitpotam:
+  title: "PetitPotam (MS-EFSRPC coercion)"
+  severity: high
+  category: config
+  cve: [CVE-2021-36942]
+  mitre: [T1187]
+  phase: quickcve
+  manual_only: true
+  tags: [coercion, relay, dc]
+  summary: "EFSRPC ile kimlik doğrulamasız DC auth zorlama."
+  description: >
+    MS-EFSRPC EfsRpcOpenFileRaw ile DC'nin makine hesabıyla saldırgana
+    kimlik doğrulaması yapmaya zorlanması. ADCS ESC8'e relay ile domain
+    ele geçirme zinciri.
+  exploitation: >
+    MANUEL (yarı) — araç coercion yüzeyini ve signing=false/ESC8 hedeflerini
+    hazırlar; relay'in canlı koordinasyonu (PetitPotam + ntlmrelayx →
+    certsrv) operatör kontrolünde.
+  remediation: >
+    EFSRPC/MS-EFSR'yi kısıtlayın (KB5005413), EPA + SMB/LDAP signing zorunlu,
+    ADCS web enrollment'ta NTLM'i kapatın.
+  references:
+    - "https://github.com/topotam/PetitPotam"
+
+printerbug:
+  title: "PrinterBug (MS-RPRN coercion)"
+  severity: high
+  category: config
+  mitre: [T1187]
+  phase: quickcve
+  manual_only: true
+  tags: [coercion, relay, spooler]
+  summary: "Spooler RPC ile makine hesabı auth zorlama."
+  description: >
+    MS-RPRN RpcRemoteFindFirstPrinterChangeNotification ile Spooler çalışan
+    hostun kimlik doğrulamaya zorlanması. Unconstrained delegation/relay zinciri.
+  exploitation: >
+    MANUEL — dementor/printerbug ile coercion; relay veya unconstrained
+    delegation hedefine yönlendirme operatör kararı.
+  remediation: "Spooler'ı kapatın (özellikle DC); signing + EPA zorunlu."
+  references:
+    - "https://github.com/leechristensen/SpoolSample"
+
+dfscoerce:
+  title: "DFSCoerce (MS-DFSNM coercion)"
+  severity: high
+  category: config
+  phase: quickcve
+  manual_only: true
+  tags: [coercion, relay, dc]
+  summary: "DFSNM ile DC auth zorlama (Spooler kapalı olsa da)."
+  description: >
+    MS-DFSNM NetrDfsAddStdRoot/NetrDfsRemoveStdRoot ile DC'yi auth'a zorlama.
+    Spooler/EFSRPC kapatılmış olsa bile çalışabilir.
+  exploitation: "MANUEL — DFSCoerce.py ile coercion; relay zinciri operatör kararı."
+  remediation: "Yamalar + signing/EPA zorunlu; RPC filtreleri."
+  references:
+    - "https://github.com/Wh04m1001/DFSCoerce"
+
+nopac:
+  title: "noPac (sAMAccountName spoofing)"
+  severity: high
+  category: vuln
+  cve: [CVE-2021-42278, CVE-2021-42287]
+  phase: quickcve
+  manual_only: true
+  tags: [ad, kerberos, privesc]
+  summary: "MachineAccountQuota + yama eksikliği → DA'ya yükseltme."
+  description: >
+    sAMAccountName/KDC doğrulama hataları; standart kullanıcı
+    MachineAccountQuota>0 ile makine hesabı oluşturup DC olarak taklit ederek
+    domain admin TGT alabilir.
+  exploitation: >
+    MANUEL — noPac.py/impacket ile; hesap oluşturma ve ticket üretimi
+    (sömürü) sonraki faz.
+  remediation: >
+    KB5008102/5008380/5008602 yamaları; MachineAccountQuota=0; makine hesabı
+    oluşturmayı kısıtlayın.
+  references:
+    - "https://www.secureworks.com/blog/nopac"
+
+# ─────────────────────────────────────────────────────────────
+# SMB / AD CONFIG EKSİKLİKLERİ
+# ─────────────────────────────────────────────────────────────
+smb-signing-disabled:
+  title: "SMB signing kapalı/zorunlu değil"
+  severity: high
+  category: config
+  mitre: [T1557]
+  phase: smb
+  manual_only: false
+  tags: [smb, relay]
+  summary: "NTLM relay için birincil hedef."
+  description: >
+    SMB imzalama zorunlu olmayan hostlar, yakalanan NTLM kimlik doğrulamanın
+    relay edilebileceği hedeflerdir. Araç bu hostları ayrı 'relay hedefi'
+    listesine koyar.
+  exploitation: >
+    YARI MANUEL — coercion/Responder ile yakalanan auth, ntlmrelayx ile
+    signing=false hedefe relay edilir (relay çalıştırma opt-in faz).
+  remediation: >
+    SMB signing'i tüm hostlarda zorunlu kılın (özellikle DC ve sunucular):
+    'Microsoft network server: Digitally sign communications (always)'.
+  references:
+    - "https://book.hacktricks.xyz/windows-hardening/ntlm/smb-relay-attack"
+
+smbv1-enabled:
+  title: "SMBv1 etkin"
+  severity: high
+  category: config
+  phase: smb
+  manual_only: false
+  tags: [smb]
+  summary: "EternalBlue + NTLM downgrade yüzeyi."
+  description: >
+    SMBv1 protokolü etkin. EternalBlue ailesi exploitleri ve protokol
+    downgrade saldırıları için yüzey oluşturur.
+  remediation: "SMBv1'i kaldırın (Disable-WindowsOptionalFeature / GPO)."
+  references:
+    - "https://learn.microsoft.com/windows-server/storage/file-server/troubleshoot/detect-enable-and-disable-smbv1-v2-v3"
+
+null-session:
+  title: "Null session (anonim SMB)"
+  severity: medium
+  category: config
+  phase: smb
+  manual_only: false
+  tags: [smb, enum]
+  summary: "Anonim SMB ile kullanıcı/paylaşım sızıntısı."
+  description: >
+    Kimlik doğrulamasız (null) oturumla kullanıcı listesi, paylaşımlar ve
+    parola politikası gibi bilgiler okunabilir.
+  exploitation: >
+    enum4linux-ng / nxc smb -u '' -p '' ile kullanıcı, grup, share ve
+    pass-pol numaralandırma. Bilgi toplama — doğrudan erişim değil.
+  remediation: >
+    RestrictAnonymous/RestrictAnonymousSAM ayarlarını sıkılaştırın; anonim
+    erişimi kapatın.
+  references:
+    - "https://book.hacktricks.xyz/network-services-pentesting/pentesting-smb"
+
+guest-enabled:
+  title: "Guest hesabı etkin"
+  severity: medium
+  category: config
+  phase: smb
+  manual_only: false
+  tags: [smb]
+  summary: "Yetkisiz erişim için guest ile oturum."
+  description: "Guest hesabı etkin; kimlik doğrulamasız paylaşım/kaynak erişimi mümkün."
+  remediation: "Guest hesabını devre dışı bırakın (GPO)."
+  references:
+    - "https://book.hacktricks.xyz/network-services-pentesting/pentesting-smb"
+
+writable-share:
+  title: "Anonim/zayıf ACL yazılabilir paylaşım"
+  severity: high
+  category: config
+  phase: smb
+  manual_only: false
+  tags: [smb, share]
+  summary: "Veri sızıntısı + NTLM-tetikleyici dosya bırakma yüzeyi."
+  description: >
+    Herkese/Authenticated Users'a yazılabilir paylaşım. Veri sızıntısı yanı
+    sıra SCF/.url/desktop.ini ile pasif hash yakalama yüzeyi.
+  exploitation: >
+    YARI MANUEL — nxc spider ile keşif; yazılabilir share'e NTLM-tetikleyici
+    dosya bırakma (opt-in). Hassas dosya avı (parola, config, kdbx).
+  remediation: "Paylaşım ve NTFS ACL'lerini en az yetkiye indirin."
+  references:
+    - "https://book.hacktricks.xyz/network-services-pentesting/pentesting-smb"
+
+llmnr-poisoning:
+  title: "LLMNR/NBT-NS/mDNS etkin"
+  severity: high
+  category: config
+  mitre: [T1557.001]
+  phase: poison
+  manual_only: true
+  tags: [poisoning, relay]
+  summary: "Ad çözümleme zehirleme ile hash yakalama yüzeyi."
+  description: >
+    LLMNR/NBT-NS/mDNS açık; yanlış ad çözümleme isteklerine yanıt vererek
+    NetNTLM hash yakalanabilir (Responder).
+  exploitation: >
+    YARI MANUEL (opt-in, gözetimli) — Responder analyze/pasif ile yüzey
+    doğrulanır; aktif zehirleme gürültülü, kısa ve kontrollü çalıştırılır.
+  remediation: "LLMNR ve NBT-NS'i GPO ile kapatın; mDNS'i kısıtlayın."
+  references:
+    - "https://book.hacktricks.xyz/windows-hardening/ntlm/llmnr-nbt-ns-poisoning"
+
+ipv6-wpad:
+  title: "IPv6/WPAD takeover yüzeyi (mitm6)"
+  severity: high
+  category: config
+  phase: poison
+  manual_only: true
+  tags: [ipv6, relay]
+  summary: "DHCPv6 guard yok — mitm6 ile kimlik toplama/relay."
+  description: >
+    IPv6 varsayılan açık, DHCPv6 guard yok. mitm6 ile sahte DNS/WPAD
+    üstlenip kimlik toplama ve relay mümkün.
+  exploitation: >
+    GÖZETİMLİ MANUEL — mitm6 tüm segmentin DNS'ini üstlenir, ağı kesebilir.
+    Kısa süreli, dar kapsamlı, operatör başında.
+  remediation: >
+    Kullanılmıyorsa IPv6'yı kapatın; RA Guard/DHCPv6 Guard; WPAD'i DNS'te
+    sabitleyin.
+  references:
+    - "https://github.com/dirkjanm/mitm6"
+
+ntlmv1-enabled:
+  title: "NTLMv1 / zayıf LMCompatibilityLevel"
+  severity: high
+  category: config
+  phase: smb
+  manual_only: false
+  tags: [ntlm]
+  summary: "Downgrade ve kolay kırılan hash."
+  description: >
+    NTLMv1 izinli; yakalanan challenge/response kolayca kırılıp NTLM hash'e
+    dönüştürülebilir (crack.sh).
+  remediation: "LmCompatibilityLevel=5 (yalnız NTLMv2); NTLMv1'i yasaklayın."
+  references:
+    - "https://book.hacktricks.xyz/windows-hardening/ntlm"
+
+webdav-enabled:
+  title: "WebClient (WebDAV) etkin"
+  severity: medium
+  category: config
+  phase: smb
+  manual_only: false
+  tags: [coercion, relay, webdav]
+  summary: "HTTP coercion/relay yüzeyi."
+  description: >
+    WebClient servisi çalışan hostlar HTTP üzerinden kimlik doğrulamaya
+    zorlanıp (ör. search-connector/.url) relay edilebilir.
+  remediation: "Gereksizse WebClient servisini kapatın; EPA + signing."
+  references:
+    - "https://book.hacktricks.xyz/windows-hardening/ntlm/httprelay"
+
+ntlm-reflection-33073:
+  title: "NTLM reflection (CVE-2025-33073)"
+  severity: high
+  category: vuln
+  cve: [CVE-2025-33073]
+  phase: smb
+  manual_only: true
+  tags: [ntlm, relay, reflection]
+  summary: "SMB signing zorlanmıyor + yama eksik → aynı-host reflection."
+  description: >
+    SMB imzalama zorlanmayan ve yamasız hostlarda, coercion ile tetiklenen
+    auth aynı hosta reflect edilerek SYSTEM elde edilebilir. Çalıştırmadan
+    doğrulanır (signing + yama durumu).
+  exploitation: >
+    MANUEL — coercion (PetitPotam/printerbug) + ntlmrelayx reflection;
+    relay çalıştırma opt-in/sonraki faz.
+  remediation: "Haziran 2025 yamaları; SMB signing zorunlu; EPA."
+  references:
+    - "https://msrc.microsoft.com/update-guide/vulnerability/CVE-2025-33073"
+
+# ─────────────────────────────────────────────────────────────
+# KERBEROS / PAROLA
+# ─────────────────────────────────────────────────────────────
+asrep-roastable:
+  title: "AS-REP Roastable hesap"
+  severity: high
+  category: vuln
+  mitre: [T1558.004]
+  phase: kerberos
+  manual_only: false
+  tags: [kerberos, cred]
+  summary: "Pre-auth kapalı hesabın hash'i kimlik gerekmeden alınır."
+  description: >
+    DONT_REQ_PREAUTH ayarlı hesaplar için AS-REP'te şifreli parça kimlik
+    doğrulamasız alınıp offline kırılabilir.
+  exploitation: >
+    Hash çıkarma OTOMATİK (GetNPUsers.py / nxc). Offline kırma MANUEL
+    (hashcat -m 18200). Kırılan parola → geçerli kimlik.
+  remediation: "Pre-auth'u zorunlu kılın; güçlü parola; hassas hesapları koruyun."
+  references:
+    - "https://book.hacktricks.xyz/windows-hardening/active-directory-methodology/asreproast"
+
+kerberoastable:
+  title: "Kerberoastable SPN hesabı"
+  severity: high
+  category: vuln
+  mitre: [T1558.003]
+  phase: kerberos
+  manual_only: false
+  tags: [kerberos, cred]
+  summary: "SPN'li hesabın TGS hash'i domain user ile alınır."
+  description: >
+    SPN atanmış kullanıcı hesapları için herhangi bir domain kullanıcısı TGS
+    isteyip şifreli parçayı offline kırabilir. Zayıf parolalı servis hesapları
+    yüksek risk.
+  exploitation: >
+    Hash çıkarma OTOMATİK (GetUserSPNs.py / nxc). Offline kırma MANUEL
+    (hashcat -m 13100). Kırılan servis hesabı sık yüksek yetkili.
+  remediation: >
+    Servis hesaplarına 25+ karakter rastgele parola veya gMSA; gereksiz
+    SPN'leri kaldırın; AES zorunlu (RC4 kapalı).
+  references:
+    - "https://book.hacktricks.xyz/windows-hardening/active-directory-methodology/kerberoast"
+
+weak-password-policy:
+  title: "Zayıf parola politikası / düşük lockout"
+  severity: medium
+  category: config
+  phase: ad
+  manual_only: false
+  tags: [password, policy]
+  summary: "Spray/kaba kuvvet yüzeyi; lockout eşiği buradan okunur."
+  description: >
+    Düşük minimum uzunluk/karmaşıklık veya yüksek/eksik lockout eşiği parola
+    spray ve kaba kuvveti kolaylaştırır. Araç spray'i lockout-aware yapar.
+  exploitation: >
+    DİKKAT — password spray yalnızca lockout eşiği okunduktan ve güvenli
+    marj hesaplandıktan sonra; politika okunamazsa otomatik DENENMEZ.
+  remediation: >
+    Güçlü parola politikası, makul lockout (ör. 5/30dk), parola denetimi,
+    sık kullanılan parolaları yasaklayın.
+  references:
+    - "https://book.hacktricks.xyz/windows-hardening/active-directory-methodology/password-spraying"
+
+timeroasting:
+  title: "Timeroasting"
+  severity: medium
+  category: vuln
+  phase: kerberos
+  manual_only: false
+  tags: [kerberos, ntp]
+  summary: "NTP üzerinden makine hesabı hash'i (kimlik gerekmez)."
+  description: >
+    Eski NTP authentication ile makine hesaplarının hash'i kimlik
+    doğrulamasız toplanıp offline kırılabilir (zayıf makine parolaları).
+  exploitation: "Hash toplama OTOMATİK (timeroast.py); kırma MANUEL (hashcat)."
+  remediation: "NTP authentication'ı kısıtlayın; yamaları geçin."
+  references:
+    - "https://github.com/SecuraBV/Timeroast"
+
+# ─────────────────────────────────────────────────────────────
+# AÇIKTA KALAN KİMLİK BİLGİLERİ
+# ─────────────────────────────────────────────────────────────
+gpp-cpassword:
+  title: "GPP cpassword (SYSVOL)"
+  severity: high
+  category: cred
+  cve: [CVE-2014-1812]
+  mitre: [T1552.006]
+  phase: ad
+  manual_only: false
+  tags: [cred, sysvol]
+  summary: "SYSVOL Groups.xml içinde AES ile çözülebilir parola."
+  description: >
+    Group Policy Preferences cpassword alanı, Microsoft'un yayımladığı sabit
+    AES anahtarıyla çözülebilir. SYSVOL herkese okunur olduğundan parola açıkta.
+  exploitation: >
+    OTOMATİK tespit + çözme (Get-GPPPassword / gpp-decrypt). Çözülen yerel
+    admin parolası sık birçok hostta geçerli.
+  remediation: >
+    MS14-025 yamasını uygulayın; SYSVOL'den cpassword içeren XML'leri silin;
+    LAPS'a geçin.
+  references:
+    - "https://learn.microsoft.com/security-updates/securitybulletins/2014/ms14-025"
+
+description-password:
+  title: "LDAP description/comment alanında parola"
+  severity: high
+  category: cred
+  phase: ad
+  manual_only: false
+  tags: [cred, ldap]
+  summary: "Nesne açıklamalarında düz metin parola."
+  description: >
+    description/info alanlarına yazılmış parolalar herhangi bir domain
+    kullanıcısıyla okunabilir; doğrudan kimlik bilgisi.
+  exploitation: "OTOMATİK — ldap enum ile description taraması; bulunan parola denenir."
+  remediation: "Açıklama alanlarından sırları temizleyin; farkındalık + denetim."
+  references:
+    - "https://book.hacktricks.xyz/windows-hardening/active-directory-methodology"
+
+share-secret:
+  title: "Paylaşım içinde parola/anahtar dosyası"
+  severity: high
+  category: cred
+  phase: smb
+  manual_only: false
+  tags: [cred, share]
+  summary: "unattend.xml, web.config, *.ps1, *.kdbx içinde kimlik bilgisi."
+  description: >
+    Okunabilir paylaşımlarda düz metin/çözülebilir parola içeren dosyalar
+    (unattend/sysprep, web.config connection string, script, KeePass kdbx).
+  exploitation: >
+    OTOMATİK keşif (share spider/Snaffler). Bulunan kimlik denenir; kdbx için
+    offline kırma MANUEL.
+  remediation: "Sırları paylaşımlardan kaldırın; secret yönetimi; ACL sıkılaştırma."
+  references:
+    - "https://github.com/SnaffCon/Snaffler"
+
+laps-readable:
+  title: "LAPS parolası fazla yetkiyle okunabilir"
+  severity: high
+  category: config
+  phase: postcred
+  manual_only: false
+  tags: [laps, ad]
+  summary: "ms-Mcs-AdmPwd ACL'i geniş → yerel admin parolası okunur."
+  description: >
+    LAPS yönetilen yerel admin parolasını okuma yetkisi gereğinden geniş
+    principal'lere verilmiş; yatay/dikey harekete yol açar.
+  exploitation: "OTOMATİK — nxc/ldap ile ms-Mcs-AdmPwd okuma denemesi."
+  remediation: "LAPS okuma ACL'ini yalnızca gerekli yönetici gruplarına verin; Windows LAPS'a geçin."
+  references:
+    - "https://learn.microsoft.com/windows-server/identity/laps/laps-overview"
+
+gmsa-readable:
+  title: "gMSA parolası fazla yetkiyle okunabilir"
+  severity: high
+  category: config
+  phase: postcred
+  manual_only: false
+  tags: [gmsa, ad]
+  summary: "msDS-ManagedPassword okuma yetkisi geniş → servis hesabı ele geçirme."
+  description: >
+    gMSA parolasını (msDS-ManagedPassword) okuma yetkisi fazla principal'de;
+    servis hesabı taklit edilebilir.
+  exploitation: "OTOMATİK — gMSADumper/nxc ile okuma; NT hash türetme."
+  remediation: "PrincipalsAllowedToRetrieveManagedPassword'ı daraltın."
+  references:
+    - "https://github.com/micahvandeusen/gMSADumper"
+
+# ─────────────────────────────────────────────────────────────
+# DELEGASYON / ACL / ADCS
+# ─────────────────────────────────────────────────────────────
+machineaccountquota:
+  title: "MachineAccountQuota > 0"
+  severity: medium
+  category: config
+  phase: ad
+  manual_only: false
+  tags: [ad, rbcd]
+  summary: "Standart kullanıcı makine hesabı oluşturabilir — noPac/RBCD yüzeyi."
+  description: >
+    Varsayılan MAQ=10; herhangi bir kullanıcı bilgisayar hesabı ekleyebilir.
+    noPac ve RBCD saldırı zincirlerinin ön koşulu.
+  remediation: "ms-DS-MachineAccountQuota=0; makine ekleme yetkisini delege edin."
+  references:
+    - "https://book.hacktricks.xyz/windows-hardening/active-directory-methodology"
+
+unconstrained-delegation:
+  title: "Unconstrained delegation"
+  severity: high
+  category: config
+  mitre: [T1558]
+  phase: ad
+  manual_only: false
+  tags: [ad, delegation]
+  summary: "Bilet hırsızlığı — coercion ile DC TGT yakalama."
+  description: >
+    Unconstrained delegation ayarlı host, kendisine kimlik doğrulayan her
+    principal'in TGT'sini belleğinde tutar. DC'yi coerce edip TGT yakalamak
+    domain ele geçirmeye götürür.
+  exploitation: >
+    YARI MANUEL — host ele geçirildiyse Rubeus monitor + printerbug ile DC
+    TGT yakalama; ticket kullanımı sonraki faz.
+  remediation: >
+    Unconstrained delegation'ı kaldırın; constrained/RBCD'ye geçin; hassas
+    hesapları 'Account is sensitive, cannot be delegated' yapın.
+  references:
+    - "https://book.hacktricks.xyz/windows-hardening/active-directory-methodology/unconstrained-delegation"
+
+constrained-delegation:
+  title: "Constrained delegation / yazılabilir RBCD"
+  severity: high
+  category: config
+  phase: ad
+  manual_only: false
+  tags: [ad, delegation]
+  summary: "S4U/protokol geçişi veya yazılabilir msDS-AllowedToActOnBehalfOf → yetki yükseltme."
+  description: >
+    Constrained delegation (özellikle protokol geçişi) veya bir bilgisayar
+    nesnesinde yazılabilir RBCD özelliği, hedef servise rastgele kullanıcı
+    taklidiyle erişim sağlar.
+  exploitation: >
+    YARI MANUEL — S4U (Rubeus/getST.py) ile hedef CIFS/HOST bileti üretme;
+    ticket kullanımı sonraki faz.
+  remediation: "Delegasyonu en aza indirin; RBCD yazma ACL'lerini denetleyin."
+  references:
+    - "https://book.hacktricks.xyz/windows-hardening/active-directory-methodology/constrained-delegation"
+
+dcsync-rights:
+  title: "DCSync hakkı (DS-Replication-Get-Changes)"
+  severity: critical
+  category: config
+  mitre: [T1003.006]
+  phase: ad
+  manual_only: true
+  tags: [ad, acl, dcsync]
+  summary: "Replikasyon hakkı olan principal tüm hash'leri çekebilir."
+  description: >
+    DS-Replication-Get-Changes(-All) hakkına sahip ayrıcalıksız bir hesap,
+    DC gibi davranıp krbtgt dahil tüm parola hash'lerini çekebilir.
+  exploitation: >
+    MANUEL (dump) — secretsdump.py -just-dc / nxc --ntds. Yüksek etki;
+    yalnızca kapsam açıkça izin veriyorsa ve opt-in bayrağıyla.
+  remediation: >
+    Replikasyon haklarını yalnızca DC'lere/gerekli hesaplara bırakın; ACL
+    anomalilerini düzeltin.
+  references:
+    - "https://book.hacktricks.xyz/windows-hardening/active-directory-methodology/dcsync"
+
+acl-abuse:
+  title: "Tehlikeli ACL/ACE (GenericAll/WriteDACL vb.)"
+  severity: high
+  category: config
+  mitre: [T1222]
+  phase: ad
+  manual_only: false
+  tags: [ad, acl, bloodhound]
+  summary: "Nesne üzerinde aşırı hak → parola sıfırlama/yetki ele geçirme."
+  description: >
+    GenericAll/GenericWrite/WriteDACL/WriteOwner/ForceChangePassword/AddMember
+    gibi haklar; kullanıcı/grup/bilgisayar/GPO/OU üzerinde yanlış atanmışsa
+    yetki yükseltme yolu açar (ör. hedef kullanıcının parolasını sıfırlama).
+  exploitation: >
+    YARI MANUEL — BloodHound yol analizi; GenericAll ile net rpc password /
+    targetedKerberoast; yürütme kararı operatöre ait.
+  remediation: "Aşırı ACE'leri kaldırın; en az yetki; Tier-0 nesnelerini koruyun."
+  references:
+    - "https://book.hacktricks.xyz/windows-hardening/active-directory-methodology/acl-persistence-abuse"
+
+shadow-credentials:
+  title: "Shadow Credentials (msDS-KeyCredentialLink yazılabilir)"
+  severity: high
+  category: config
+  phase: ad
+  manual_only: false
+  tags: [ad, adcs, pkinit]
+  summary: "Yazılabilir KeyCredentialLink → PKINIT ile kimlik ele geçirme."
+  description: >
+    Hedef nesnenin msDS-KeyCredentialLink özelliğine yazabilen principal,
+    kendi anahtarını ekleyip PKINIT ile o nesne olarak kimlik doğrular.
+  exploitation: >
+    YARI MANUEL — certipy shadow auto / Whisker; anahtar ekleme ve TGT alma
+    operatör kararı.
+  remediation: "KeyCredentialLink yazma ACL'lerini denetleyin; Key Trust'ı koruyun."
+  references:
+    - "https://posts.specterops.io/shadow-credentials-abusing-key-trust-account-mapping-for-takeover-8ee1a53566ab"
+
+adcs-esc1:
+  title: "ADCS ESC1 (enrollee-supplies-subject)"
+  severity: critical
+  category: vuln
+  mitre: [T1649]
+  phase: ad
+  manual_only: true
+  tags: [adcs, privesc]
+  summary: "Şablon SAN'a izin veriyor → herhangi bir kullanıcı olarak sertifika."
+  description: >
+    Client Authentication + enrollee supplies subject + Domain Users enroll
+    hakkı olan şablonda, düşük yetkili kullanıcı SAN'a Domain Admin yazıp o
+    kullanıcı olarak kimlik doğrulayan sertifika alır.
+  exploitation: >
+    MANUEL — certipy req ... -upn administrator; alınan pfx ile PKINIT/TGT.
+    Şablon seçimi ve talep zinciri operatör kararı (yanlış şablon iz bırakır).
+  remediation: >
+    Şablonda 'enrollee supplies subject'i kaldırın; enroll yetkisini daraltın;
+    manager approval ekleyin.
+  references:
+    - "https://posts.specterops.io/certified-pre-owned-d95910965cd2"
+
+adcs-esc8:
+  title: "ADCS ESC8 (web enrollment NTLM relay)"
+  severity: critical
+  category: vuln
+  phase: ad
+  manual_only: true
+  tags: [adcs, relay]
+  summary: "HTTP enrollment + NTLM → coercion ile DC sertifikası/relay."
+  description: >
+    CA web enrollment (certsrv) HTTP üzerinde NTLM kabul ediyor. Coercion ile
+    DC auth'u certsrv'e relay edilip DC için sertifika alınır → domain ele geçirme.
+  exploitation: >
+    MANUEL (yarı) — araç ESC8 yüzeyini + coercion hedefini hazırlar; PetitPotam
+    + ntlmrelayx --target http://CA/certsrv zinciri operatör kontrolünde.
+  remediation: >
+    Web enrollment'ta NTLM'i kapatın/EPA zorunlu; HTTPS + kanal bağlama;
+    gereksizse certsrv'i kaldırın.
+  references:
+    - "https://posts.specterops.io/certified-pre-owned-d95910965cd2"
+
+# ─────────────────────────────────────────────────────────────
+# AĞ / SERVİS / TLS
+# ─────────────────────────────────────────────────────────────
+ldap-anonymous-bind:
+  title: "Anonim LDAP bind"
+  severity: medium
+  category: config
+  phase: ad
+  manual_only: false
+  tags: [ldap, enum]
+  summary: "Kimlik doğrulamasız LDAP ile bilgi sızıntısı."
+  description: "Anonim/Pre-Windows 2000 bind ile dizin bilgisi okunabilir."
+  remediation: "Anonim bind'i kapatın; LDAP signing + channel binding zorunlu."
+  references:
+    - "https://book.hacktricks.xyz/network-services-pentesting/pentesting-ldap"
+
+snmp-default-community:
+  title: "SNMP varsayılan community"
+  severity: medium
+  category: config
+  phase: quickcve
+  manual_only: false
+  tags: [snmp]
+  summary: "public/private ile cihaz/config sızıntısı."
+  description: >
+    SNMP v1/v2c'de public/private community ile sistem bilgisi, ARP/route,
+    bazen yazma (config değişikliği) mümkün.
+  exploitation: "OTOMATİK tespit (onesixtyone); snmpwalk ile enum. Yazma MANUEL."
+  remediation: "Community'leri değiştirin; SNMPv3 (auth+priv); erişimi kısıtlayın."
+  references:
+    - "https://book.hacktricks.xyz/network-services-pentesting/pentesting-snmp"
+
+heartbleed:
+  title: "Heartbleed (CVE-2014-0160)"
+  severity: high
+  category: vuln
+  cve: [CVE-2014-0160]
+  phase: quickcve
+  manual_only: false
+  tags: [tls]
+  summary: "OpenSSL bellek sızıntısı — anahtar/oturum sızması."
+  description: "OpenSSL TLS heartbeat'te sınır dışı okuma; bellekten anahtar/oturum sızar."
+  exploitation: "OTOMATİK tespit (ssl-heartbleed NSE). Bellek çekme MANUEL."
+  remediation: "OpenSSL'i yükseltin; etkilenen anahtarları/sertifikaları yenileyin."
+  references:
+    - "https://heartbleed.com/"
+
+weak-tls:
+  title: "Zayıf/süresi dolmuş/self-signed TLS"
+  severity: medium
+  category: config
+  phase: quickcve
+  manual_only: false
+  tags: [tls]
+  summary: "MITM / güven zaafı."
+  description: >
+    Zayıf şifre takımları (POODLE/DROWN), süresi dolmuş veya self-signed
+    sertifikalar; MITM ve güven sorunları.
+  remediation: "TLS1.2+ zorunlu, güçlü şifre takımları, geçerli CA sertifikaları."
+  references:
+    - "https://github.com/drwetter/testssl.sh"

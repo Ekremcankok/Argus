@@ -1,11 +1,12 @@
 """FastAPI kontrol paneli backend'i.
 
-Tek seferde tek aktif tarama (pentest aracında eşzamanlı koşu kaosu olmaz).
-Canlı ilerleme WebSocket üzerinden olay akışıyla verilir.
+Çok görünümlü ürün paneli için API: tarama geçmişi, hostlar, bulgular,
+zafiyet kataloğu ve dashboard. Tek aktif tarama; canlı ilerleme WebSocket ile.
 """
 from __future__ import annotations
 
 import asyncio
+import datetime as dt
 import threading
 import time
 import uuid
@@ -18,20 +19,24 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from ..catalog import all_entries, categories, get_entry
 from ..config import Config, Mode, ScopeConfig, load_config
+from ..findings import Severity
 from ..logging_setup import register_secret, setup_logging
 from ..modules import load_builtin_modules
-from ..registry import all_modules, module_metadata
+from ..registry import module_metadata
 from ..scope import ScopeError, ScopeGuard
 
 _STATIC = Path(__file__).parent / "static"
+_SEV_ORDER = ["critical", "high", "medium", "low", "info"]
 
 
 class ScanRequest(BaseModel):
+    name: Optional[str] = None
     include: list[str]
     exclude: list[str] = []
     mode: str = "safe"
-    modules: Optional[list[str]] = None   # None → varsayılan açık modüller
+    modules: Optional[list[str]] = None
     dry_run: bool = False
 
 
@@ -47,7 +52,7 @@ class Event:
 class Job:
     id: str
     request: ScanRequest
-    status: str = "pending"               # pending|running|done|failed|stopped
+    status: str = "pending"
     started_at: float = field(default_factory=time.time)
     finished_at: Optional[float] = None
     run_dir: Optional[str] = None
@@ -57,20 +62,69 @@ class Job:
     error: Optional[str] = None
     orch: object = None
 
+    @property
+    def name(self) -> str:
+        return self.request.name or f"Tarama {self.id}"
+
+    def findings(self) -> list[dict]:
+        if self.orch is not None:
+            try:
+                return self.orch.store.ranked()
+            except Exception:
+                return []
+        return []
+
+    def inventory(self) -> dict:
+        if self.orch is not None:
+            try:
+                return self.orch.inventory.snapshot()
+            except Exception:
+                return {}
+        return {}
+
+    def meta(self) -> dict:
+        fs = self.findings()
+        counts: dict[str, int] = {}
+        for r in fs:
+            counts[r["severity"]] = counts.get(r["severity"], 0) + 1
+        inv = self.inventory()
+        return {
+            "id": self.id, "name": self.name, "status": self.status,
+            "mode": self.request.mode, "dry_run": self.request.dry_run,
+            "started_at": self.started_at, "finished_at": self.finished_at,
+            "run_dir": self.run_dir, "severity_counts": counts,
+            "total": len(fs), "hosts": len(inv.get("hosts", {})),
+            "include": self.request.include, "exclude": self.request.exclude,
+        }
+
 
 class JobManager:
     def __init__(self, base_config_path: Path):
         self.base_config_path = base_config_path
-        self.job: Optional[Job] = None
+        self.jobs: list[Job] = []
         self._thread: Optional[threading.Thread] = None
 
     @property
+    def active(self) -> Optional[Job]:
+        for j in reversed(self.jobs):
+            if j.status == "running":
+                return j
+        return self.jobs[-1] if self.jobs else None
+
+    @property
     def running(self) -> bool:
-        return self.job is not None and self.job.status == "running"
+        a = self.active
+        return a is not None and a.status == "running"
+
+    def get(self, job_id: Optional[str]) -> Optional[Job]:
+        if not job_id:
+            return self.active
+        for j in self.jobs:
+            if j.id == job_id:
+                return j
+        return None
 
     def _build_config(self, req: ScanRequest) -> Config:
-        # Taban config (creds/dc/dns/lockout/concurrency) varsa dosyadan;
-        # scope ve mode panelden gelir. Panel ASLA secret almaz — creds env'den.
         if self.base_config_path.exists():
             cfg = load_config(self.base_config_path)
             cfg.scope = ScopeConfig(include=req.include, exclude=req.exclude)
@@ -84,13 +138,11 @@ class JobManager:
             raise HTTPException(409, "zaten çalışan bir tarama var")
 
         cfg = self._build_config(req)
-        # Scope'u erkenden doğrula (panel geçersiz girdide hemen hata görsün)
         try:
             ScopeGuard(cfg.scope)
         except ScopeError as e:
             raise HTTPException(400, f"geçersiz kapsam: {e}")
 
-        # Creds'i maskeleme setine ekle
         for cred in cfg.credentials:
             try:
                 _, value = cred.secret()
@@ -107,10 +159,7 @@ class JobManager:
             job.events.append(Event(time.time(), module, status, message))
             job.module_status[module] = {"status": status, "message": message}
 
-        # Orchestrator'ı burada kur (store hemen erişilebilir olsun), thread'de koş.
-        # Panelden her tarama AYRI koşudur → benzersiz run_dir (kazara resume olmaz).
-        import datetime as _dt
-        run_dir = cfg.output_dir / f"{_dt.date.today().isoformat()}_{job.id}"
+        run_dir = cfg.output_dir / f"{dt.date.today().isoformat()}_{job.id}"
         from ..orchestrator import Orchestrator
         orch = Orchestrator(cfg, run_dir=run_dir, dry_run=req.dry_run,
                             enabled=enabled, progress_cb=progress_cb)
@@ -128,30 +177,40 @@ class JobManager:
             finally:
                 job.finished_at = time.time()
 
-        self.job = job
+        self.jobs.append(job)
         self._thread = threading.Thread(target=worker, daemon=True)
         self._thread.start()
         return job
 
     def stop(self) -> None:
-        if self.job and self.job.orch is not None:
-            self.job.orch.stop()
+        a = self.active
+        if a and a.orch is not None:
+            a.orch.stop()
 
-    def findings(self) -> list[dict]:
-        if self.job and self.job.orch is not None:
-            try:
-                return self.job.orch.store.ranked()
-            except Exception:
-                return []
-        return []
 
-    def inventory(self) -> dict:
-        if self.job and self.job.orch is not None:
-            try:
-                return self.job.orch.inventory.snapshot()
-            except Exception:
-                return {}
-        return {}
+def _dashboard(job: Optional[Job]) -> dict:
+    if job is None:
+        return {"status": "idle", "severity_counts": {}, "total": 0, "hosts": 0,
+                "manual": 0, "top": [], "by_category": {}, "module_status": {}}
+    fs = job.findings()
+    sev: dict[str, int] = {}
+    cat: dict[str, int] = {}
+    manual = 0
+    for r in fs:
+        sev[r["severity"]] = sev.get(r["severity"], 0) + 1
+        cat[r["category"]] = cat.get(r["category"], 0) + 1
+        if r["manual_followup"]:
+            manual += 1
+    inv = job.inventory()
+    return {
+        "job_id": job.id, "name": job.name, "status": job.status,
+        "mode": job.request.mode, "dry_run": job.request.dry_run,
+        "severity_counts": sev, "by_category": cat,
+        "total": len(fs), "hosts": len(inv.get("hosts", {})),
+        "manual": manual, "top": fs[:8],
+        "module_status": job.module_status,
+        "started_at": job.started_at, "finished_at": job.finished_at,
+    }
 
 
 def create_app(base_config_path: str | Path = "config.yaml") -> FastAPI:
@@ -163,24 +222,21 @@ def create_app(base_config_path: str | Path = "config.yaml") -> FastAPI:
     def index():
         return FileResponse(_STATIC / "index.html")
 
+    # ── meta ──
     @app.get("/api/modules")
     def modules():
         return module_metadata()
 
     @app.get("/api/defaults")
     def defaults():
-        """Panel ön-dolgu: taban config'ten scope/mode (varsa)."""
         p = Path(base_config_path)
         if p.exists():
             cfg = load_config(p)
-            return {
-                "include": cfg.scope.include,
-                "exclude": cfg.scope.exclude,
-                "mode": cfg.mode.value,
-                "has_credentials": len(cfg.credentials) > 0,
-            }
+            return {"include": cfg.scope.include, "exclude": cfg.scope.exclude,
+                    "mode": cfg.mode.value, "has_credentials": len(cfg.credentials) > 0}
         return {"include": [], "exclude": [], "mode": "safe", "has_credentials": False}
 
+    # ── tarama kontrol ──
     @app.post("/api/scan")
     def scan(req: ScanRequest):
         job = mgr.start(req)
@@ -191,46 +247,89 @@ def create_app(base_config_path: str | Path = "config.yaml") -> FastAPI:
         mgr.stop()
         return {"ok": True}
 
+    # ── taramalar (geçmiş) ──
+    @app.get("/api/scans")
+    def scans():
+        return [j.meta() for j in reversed(mgr.jobs)]
+
+    @app.get("/api/scans/{job_id}")
+    def scan_detail(job_id: str):
+        j = mgr.get(job_id)
+        if not j:
+            raise HTTPException(404, "tarama bulunamadı")
+        return {**j.meta(), "module_status": j.module_status,
+                "events": [vars(e) for e in j.events], "error": j.error}
+
+    # ── canlı (WebSocket + aktif job) ──
     @app.get("/api/job")
     def job():
-        if mgr.job is None:
+        a = mgr.active
+        if a is None:
             return {"status": "idle"}
-        j = mgr.job
-        return {
-            "id": j.id, "status": j.status, "run_dir": j.run_dir,
-            "summary": j.summary, "error": j.error,
-            "module_status": j.module_status,
-            "started_at": j.started_at, "finished_at": j.finished_at,
-        }
+        return {"id": a.id, "status": a.status, "run_dir": a.run_dir,
+                "summary": a.summary, "error": a.error,
+                "module_status": a.module_status}
+
+    @app.get("/api/dashboard")
+    def dashboard(job_id: Optional[str] = None):
+        return _dashboard(mgr.get(job_id))
 
     @app.get("/api/findings")
-    def findings():
-        return mgr.findings()
+    def findings(job_id: Optional[str] = None):
+        j = mgr.get(job_id)
+        return j.findings() if j else []
 
-    @app.get("/api/inventory")
-    def inventory():
-        return mgr.inventory()
+    @app.get("/api/hosts")
+    def hosts(job_id: Optional[str] = None):
+        j = mgr.get(job_id)
+        if not j:
+            return {"hosts": {}}
+        inv = j.inventory()
+        fs = j.findings()
+        # host başına bulgu sayısı
+        per: dict[str, int] = {}
+        for r in fs:
+            per[r["host"]] = per.get(r["host"], 0) + 1
+        for ip, h in inv.get("hosts", {}).items():
+            h["finding_count"] = per.get(ip, 0)
+        return inv
+
+    # ── zafiyet kataloğu ──
+    @app.get("/api/catalog")
+    def catalog():
+        return all_entries()
+
+    @app.get("/api/catalog/categories")
+    def catalog_categories():
+        return categories()
+
+    @app.get("/api/catalog/{kb_id}")
+    def catalog_entry(kb_id: str):
+        e = get_entry(kb_id)
+        if not e:
+            raise HTTPException(404, "katalog kaydı yok")
+        return e
 
     @app.websocket("/ws")
     async def ws(socket: WebSocket):
         await socket.accept()
+        sent_for: Optional[str] = None
         sent = 0
         try:
             while True:
-                j = mgr.job
+                j = mgr.active
                 if j is not None:
-                    # Yeni olayları gönder
+                    if sent_for != j.id:
+                        sent_for, sent = j.id, 0
                     while sent < len(j.events):
                         e = j.events[sent]
-                        await socket.send_json({
-                            "type": "event", "ts": e.ts, "module": e.module,
-                            "status": e.status, "message": e.message,
-                        })
+                        await socket.send_json({"type": "event", "ts": e.ts,
+                            "module": e.module, "status": e.status, "message": e.message,
+                            "job_id": j.id})
                         sent += 1
-                    await socket.send_json({
-                        "type": "job", "status": j.status,
-                        "summary": j.summary, "module_status": j.module_status,
-                    })
+                    await socket.send_json({"type": "job", "job_id": j.id,
+                        "status": j.status, "summary": j.summary,
+                        "module_status": j.module_status})
                 await asyncio.sleep(0.5)
         except WebSocketDisconnect:
             return

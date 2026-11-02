@@ -4,279 +4,37 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>İç Ağ Recon Paneli</title>
-<style>
-  :root{
-    --bg:#0f1419; --panel:#161c24; --panel2:#1c242e; --border:#2a3440;
-    --fg:#d6dee8; --muted:#8a97a6; --accent:#4aa3ff; --accent2:#2b6cb0;
-    --crit:#ff4d4f; --high:#ff8c42; --med:#f5c542; --low:#5ec8d8; --info:#7a8a9a;
-    --ok:#3ecf8e; --run:#4aa3ff; --skip:#6b7684; --fail:#ff4d4f;
-  }
-  *{box-sizing:border-box}
-  body{margin:0;background:var(--bg);color:var(--fg);
-    font:14px/1.5 -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif}
-  header{display:flex;align-items:center;gap:14px;padding:12px 18px;
-    background:var(--panel);border-bottom:1px solid var(--border);position:sticky;top:0;z-index:10}
-  header h1{font-size:16px;margin:0;font-weight:600}
-  header .sub{color:var(--muted);font-size:12px}
-  .badge{padding:2px 9px;border-radius:999px;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.03em}
-  .st-idle{background:#2a3440;color:var(--muted)}
-  .st-running{background:rgba(74,163,255,.15);color:var(--run)}
-  .st-done{background:rgba(62,207,142,.15);color:var(--ok)}
-  .st-failed{background:rgba(255,77,79,.15);color:var(--fail)}
-  .st-stopped{background:rgba(245,197,66,.15);color:var(--med)}
-  .spacer{flex:1}
-  button{font:inherit;cursor:pointer;border:1px solid var(--border);background:var(--panel2);
-    color:var(--fg);padding:8px 16px;border-radius:7px;font-weight:600}
-  button.primary{background:var(--accent2);border-color:var(--accent);color:#fff}
-  button.danger{background:transparent;border-color:var(--fail);color:var(--fail)}
-  button:disabled{opacity:.45;cursor:not-allowed}
-  .wrap{display:grid;grid-template-columns:360px 1fr;gap:16px;padding:16px;max-width:1500px;margin:0 auto}
-  @media(max-width:900px){.wrap{grid-template-columns:1fr}}
-  .card{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:14px;margin-bottom:16px}
-  .card h2{font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);margin:0 0 10px}
-  label{display:block;font-size:12px;color:var(--muted);margin:10px 0 4px}
-  textarea,input[type=text]{width:100%;background:var(--bg);border:1px solid var(--border);
-    color:var(--fg);border-radius:7px;padding:8px;font:13px ui-monospace,Menlo,Consolas,monospace;resize:vertical}
-  .modes{display:flex;gap:8px;margin-top:4px}
-  .modes label{display:flex;align-items:center;gap:6px;margin:0;color:var(--fg);
-    background:var(--panel2);padding:6px 12px;border-radius:7px;border:1px solid var(--border);cursor:pointer;flex:1}
-  .mod{display:flex;align-items:flex-start;gap:9px;padding:8px;border-radius:7px}
-  .mod:hover{background:var(--panel2)}
-  .mod input{margin-top:3px}
-  .mod .m-main{flex:1}
-  .mod .m-name{font-weight:600}
-  .mod .m-desc{font-size:12px;color:var(--muted)}
-  .pill{font-size:10px;padding:1px 6px;border-radius:4px;margin-left:6px;vertical-align:middle}
-  .pill.intr{background:rgba(255,140,66,.18);color:var(--high)}
-  .pill.phase{background:#2a3440;color:var(--muted)}
-  .progress-row{display:flex;align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid var(--border)}
-  .progress-row:last-child{border-bottom:none}
-  .dot{width:9px;height:9px;border-radius:50%;flex:none;background:var(--skip)}
-  .dot.running{background:var(--run);box-shadow:0 0 0 3px rgba(74,163,255,.25);animation:pulse 1s infinite}
-  .dot.done{background:var(--ok)} .dot.failed{background:var(--fail)}
-  .dot.skipped{background:var(--skip)} .dot.pending{background:#3a4654}
-  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
-  .pr-name{font-weight:600;min-width:90px}
-  .pr-msg{color:var(--muted);font-size:12px}
-  table{width:100%;border-collapse:collapse;font-size:13px}
-  th,td{text-align:left;padding:7px 9px;border-bottom:1px solid var(--border);vertical-align:top}
-  th{color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.04em}
-  .sev{font-weight:700;text-transform:uppercase;font-size:11px}
-  .sev-critical{color:var(--crit)} .sev-high{color:var(--high)} .sev-medium{color:var(--med)}
-  .sev-low{color:var(--low)} .sev-info{color:var(--info)}
-  .tag{font-size:11px;padding:1px 6px;border-radius:4px;background:#2a3440;color:var(--muted)}
-  .tag.manual{background:rgba(255,140,66,.18);color:var(--high)}
-  .counts{display:flex;gap:8px;flex-wrap:wrap}
-  .count{background:var(--panel2);border:1px solid var(--border);border-radius:8px;padding:8px 12px;text-align:center;min-width:64px}
-  .count .n{font-size:20px;font-weight:700} .count .l{font-size:10px;color:var(--muted);text-transform:uppercase}
-  #log{font:12px ui-monospace,Menlo,Consolas,monospace;background:var(--bg);border:1px solid var(--border);
-    border-radius:7px;padding:10px;height:150px;overflow:auto;color:var(--muted)}
-  #log .e-running{color:var(--run)} #log .e-done{color:var(--ok)}
-  #log .e-skipped{color:var(--skip)} #log .e-failed{color:var(--fail)}
-  .hint{font-size:11px;color:var(--muted);margin-top:6px}
-  .warn{background:rgba(245,197,66,.1);border:1px solid var(--med);color:var(--med);
-    padding:8px 10px;border-radius:7px;font-size:12px;margin-top:8px}
-  .empty{color:var(--muted);text-align:center;padding:24px;font-size:13px}
-</style>
+<link rel="stylesheet" href="/static/app.css">
 </head>
 <body>
-<header>
-  <h1>İç Ağ Recon Paneli</h1>
-  <span class="sub">tespit odaklı · safe-by-default</span>
-  <span id="jobStatus" class="badge st-idle">idle</span>
-  <div class="spacer"></div>
-  <button id="startBtn" class="primary">▶ Taramayı Başlat</button>
-  <button id="stopBtn" class="danger" disabled>■ Durdur</button>
-</header>
-
-<div class="wrap">
-  <!-- SOL: kontroller -->
-  <div>
-    <div class="card">
-      <h2>Kapsam</h2>
-      <label>Include ağları (her satıra bir CIDR/IP)</label>
-      <textarea id="include" rows="3" placeholder="192.168.1.0/24"></textarea>
-      <label>Exclude (her zaman kazanır)</label>
-      <textarea id="exclude" rows="2" placeholder="192.168.1.1&#10;192.168.1.30"></textarea>
-      <div class="hint">Exclude'a yazıcı/OT/kritik sunucuları koy — bunlara asla dokunulmaz.</div>
+<div class="app">
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="logo">R</div>
+      <div><div class="t">Recon</div><div class="s">iç ağ · tespit</div></div>
     </div>
+    <nav class="nav">
+      <a href="#/"><span class="ic">▣</span> Genel Bakış</a>
+      <a href="#/scans"><span class="ic">◉</span> Taramalar</a>
+      <a href="#/hosts"><span class="ic">▤</span> Hostlar</a>
+      <a href="#/findings"><span class="ic">⚑</span> Bulgular</a>
+      <a href="#/catalog"><span class="ic">✦</span> Zafiyet Kataloğu <span class="cnt" id="navcnt-catalog">—</span></a>
+    </nav>
+    <div class="grow"></div>
+    <button class="btn-new" onclick="location.hash='#/new'">+ Yeni Tarama</button>
+    <div class="sb-foot">safe-by-default · localhost<br>tespit ≠ sömürü</div>
+  </aside>
 
-    <div class="card">
-      <h2>Mod</h2>
-      <div class="modes">
-        <label><input type="radio" name="mode" value="safe" checked> Safe</label>
-        <label><input type="radio" name="mode" value="aggressive"> Aggressive</label>
-      </div>
-      <div class="hint">Safe: yıkıcı/intrusive faz yok. Aggressive: intrusive modüller açılır (opt-in).</div>
-      <label style="margin-top:12px"><input type="checkbox" id="dryRun"> Dry-run (komutları yaz, çalıştırma)</label>
-      <div id="credWarn" class="warn" style="display:none">⚠ config.yaml'de kimlik bilgisi yok — kimlik gerektiren modüller atlanır.</div>
+  <main class="main">
+    <div class="topbar">
+      <h1 id="ttl">Genel Bakış</h1>
+      <span id="crumb"></span>
+      <div class="spacer"></div>
+      <span id="statuspill" class="st st-idle" style="display:none">idle</span>
     </div>
-
-    <div class="card">
-      <h2>Modüller <span id="modCount" class="pill phase"></span></h2>
-      <div id="modules"></div>
-    </div>
-  </div>
-
-  <!-- SAĞ: ilerleme + bulgular -->
-  <div>
-    <div class="card">
-      <h2>İlerleme</h2>
-      <div id="progress"><div class="empty">Tarama başlatılmadı.</div></div>
-    </div>
-
-    <div class="card">
-      <h2>Özet</h2>
-      <div id="counts" class="counts"><div class="empty">—</div></div>
-    </div>
-
-    <div class="card">
-      <h2>Bulgular (<span id="findCount">0</span>)</h2>
-      <div id="findings"><div class="empty">Henüz bulgu yok.</div></div>
-    </div>
-
-    <div class="card">
-      <h2>Canlı olay akışı</h2>
-      <div id="log"></div>
-    </div>
-  </div>
+    <div class="content" id="content"></div>
+  </main>
 </div>
-
-<script>
-const $ = s => document.querySelector(s);
-let modules = [];
-
-async function init(){
-  modules = await (await fetch('/api/modules')).json();
-  renderModules();
-  const d = await (await fetch('/api/defaults')).json();
-  if(d.include?.length) $('#include').value = d.include.join('\n');
-  if(d.exclude?.length) $('#exclude').value = d.exclude.join('\n');
-  if(d.mode) document.querySelector(`input[name=mode][value=${d.mode}]`).checked = true;
-  $('#credWarn').style.display = d.has_credentials ? 'none' : 'block';
-  connectWS();
-  refreshJob();
-}
-
-function currentMode(){ return document.querySelector('input[name=mode]:checked').value; }
-
-function renderModules(){
-  $('#modCount').textContent = modules.length;
-  const mode = currentMode();
-  $('#modules').innerHTML = modules.map(m=>{
-    const gated = m.intrusive && mode!=='aggressive';
-    const checked = m.default_enabled && !gated ? 'checked' : '';
-    const dis = gated ? 'disabled' : '';
-    return `<label class="mod">
-      <input type="checkbox" class="modchk" value="${m.name}" ${checked} ${dis}>
-      <div class="m-main">
-        <span class="m-name">${m.label||m.name}</span>
-        <span class="pill phase">faz ${m.phase}</span>
-        ${m.intrusive?'<span class="pill intr">intrusive</span>':''}
-        <div class="m-desc">${m.description||''}</div>
-      </div>
-    </label>`;
-  }).join('');
-}
-document.addEventListener('change', e=>{ if(e.target.name==='mode') renderModules(); });
-
-function selectedModules(){
-  return [...document.querySelectorAll('.modchk:checked')].map(c=>c.value);
-}
-
-$('#startBtn').onclick = async ()=>{
-  const include = $('#include').value.split('\n').map(s=>s.trim()).filter(Boolean);
-  const exclude = $('#exclude').value.split('\n').map(s=>s.trim()).filter(Boolean);
-  if(!include.length){ alert('En az bir include ağı gir.'); return; }
-  const body = {include, exclude, mode:currentMode(), modules:selectedModules(), dry_run:$('#dryRun').checked};
-  const r = await fetch('/api/scan',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-  if(!r.ok){ alert('Hata: '+(await r.json()).detail); return; }
-  $('#log').innerHTML=''; $('#findings').innerHTML='<div class="empty">Taranıyor…</div>';
-  setRunning(true);
-};
-$('#stopBtn').onclick = ()=> fetch('/api/stop',{method:'POST'});
-
-function setRunning(r){ $('#startBtn').disabled=r; $('#stopBtn').disabled=!r; }
-
-function setStatus(s){
-  const b=$('#jobStatus'); b.className='badge st-'+(s==='idle'?'idle':s);
-  b.textContent=s;
-  setRunning(s==='running');
-}
-
-function renderProgress(ms){
-  const order = modules.map(m=>m.name);
-  const rows = order.map(n=>{
-    const st = ms[n]?.status || 'pending';
-    const msg = ms[n]?.message || '';
-    return `<div class="progress-row"><span class="dot ${st}"></span>
-      <span class="pr-name">${n}</span><span class="pr-msg">${st}${msg?' · '+msg:''}</span></div>`;
-  }).join('');
-  $('#progress').innerHTML = rows || '<div class="empty">—</div>';
-}
-
-function renderCounts(sum){
-  const c = sum.severity_counts||{};
-  const order=['critical','high','medium','low','info'];
-  const extra=[['canlı host',sum.live_hosts],['toplam',sum.total_findings]];
-  let html = order.filter(k=>c[k]).map(k=>
-    `<div class="count"><div class="n sev-${k}">${c[k]}</div><div class="l">${k}</div></div>`).join('');
-  html += extra.map(([l,v])=> v!=null?
-    `<div class="count"><div class="n">${v}</div><div class="l">${l}</div></div>`:'').join('');
-  $('#counts').innerHTML = html || '<div class="empty">—</div>';
-}
-
-async function refreshFindings(){
-  const f = await (await fetch('/api/findings')).json();
-  $('#findCount').textContent = f.length;
-  if(!f.length){ $('#findings').innerHTML='<div class="empty">Henüz bulgu yok.</div>'; return; }
-  $('#findings').innerHTML = `<table><thead><tr>
-    <th>Önem</th><th>Host</th><th>Port</th><th>Başlık</th><th>Güven</th><th>Sömürü</th><th>Araç</th>
-    </tr></thead><tbody>${f.map(r=>`<tr>
-      <td class="sev sev-${r.severity}">${r.severity}</td>
-      <td>${r.host}</td><td>${r.port??''}</td>
-      <td>${r.title}${r.manual_followup?' <span class="tag manual">MANUEL</span>':''}</td>
-      <td><span class="tag">${r.confidence}</span></td>
-      <td><span class="tag">${r.exploitable}</span></td>
-      <td><span class="tag">${r.source_tool||''}</span></td>
-    </tr>`).join('')}</tbody></table>`;
-}
-
-function logEvent(e){
-  const t=new Date(e.ts*1000).toLocaleTimeString();
-  const div=document.createElement('div');
-  div.className='e-'+e.status;
-  div.textContent=`${t}  ${e.module}  [${e.status}]  ${e.message||''}`;
-  $('#log').appendChild(div); $('#log').scrollTop=$('#log').scrollHeight;
-}
-
-let lastStatus='idle';
-function connectWS(){
-  const ws=new WebSocket(`ws://${location.host}/ws`);
-  ws.onmessage=ev=>{
-    const m=JSON.parse(ev.data);
-    if(m.type==='event') logEvent(m);
-    else if(m.type==='job'){
-      if(m.status!=='pending'){ setStatus(m.status); renderProgress(m.module_status||{}); }
-      if(m.summary && Object.keys(m.summary).length) renderCounts(m.summary);
-      if(lastStatus==='running' && m.status!=='running') refreshFindings();
-      if(m.status==='running') refreshFindings();
-      lastStatus=m.status;
-    }
-  };
-  ws.onclose=()=> setTimeout(connectWS,1500);
-}
-
-async function refreshJob(){
-  const j=await (await fetch('/api/job')).json();
-  if(j.status && j.status!=='idle'){
-    setStatus(j.status); renderProgress(j.module_status||{});
-    if(j.summary) renderCounts(j.summary);
-    refreshFindings();
-  }
-}
-
-init();
-</script>
+<script src="/static/app.js"></script>
 </body>
 </html>

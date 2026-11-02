@@ -28,11 +28,12 @@ _ROLE_PORTS = {
 }
 
 # Rapora info bulgusu olarak düşecek yüksek değerli servisler
+# (başlık, önem, kb_id → zafiyet kataloğu kaydı)
 _NOTABLE = {
-    88: ("Domain Controller adayı (Kerberos 88 açık)", Severity.info),
-    3389: ("RDP erişilebilir (3389)", Severity.low),
-    1433: ("MSSQL erişilebilir (1433)", Severity.low),
-    445: ("SMB erişilebilir (445)", Severity.info),
+    88: ("Domain Controller adayı (Kerberos 88 açık)", Severity.info, "dc-detected"),
+    3389: ("RDP erişilebilir (3389)", Severity.low, "rdp-exposed"),
+    1433: ("MSSQL erişilebilir (1433)", Severity.low, "mssql-exposed"),
+    445: ("SMB erişilebilir (445)", Severity.info, "smb-exposed"),
 }
 
 
@@ -120,13 +121,13 @@ class PortScanModule(Module):
                 ctx.inventory.add_role(ip, role)
 
             if portid in _NOTABLE:
-                title, sev = _NOTABLE[portid]
+                title, sev, kb = _NOTABLE[portid]
                 findings.append(Finding(
                     host=ip, port=portid, title=title, phase=self.name,
                     category="service", severity=sev,
                     confidence=Confidence.detected, exploitable=Exploitable.na,
                     evidence_path=str((out_dir / f"{ip}.txt").as_posix()),
-                    source_tool="nmap",
+                    source_tool="nmap", kb_id=kb,
                     notes=f"{svc.name} {svc.product} {svc.version}".strip(),
                 ))
         return findings

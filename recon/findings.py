@@ -55,6 +55,7 @@ class Finding:
     source_tool: str = ""
     manual_followup: bool = False
     notes: str = ""
+    kb_id: Optional[str] = None       # zafiyet kataloğu kaydına bağlantı
 
     @property
     def id(self) -> str:
@@ -86,6 +87,7 @@ CREATE TABLE IF NOT EXISTS findings (
     source_tool TEXT,
     manual_followup INTEGER NOT NULL DEFAULT 0,
     notes TEXT,
+    kb_id TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_findings_host ON findings(host);
@@ -115,9 +117,9 @@ class FindingStore:
                 self._conn.execute(
                     """INSERT INTO findings
                        (id, host, port, phase, category, title, severity, confidence,
-                        exploitable, evidence_path, source_tool, manual_followup, notes)
+                        exploitable, evidence_path, source_tool, manual_followup, notes, kb_id)
                        VALUES (:id,:host,:port,:phase,:category,:title,:severity,:confidence,
-                        :exploitable,:evidence_path,:source_tool,:manual_followup,:notes)""",
+                        :exploitable,:evidence_path,:source_tool,:manual_followup,:notes,:kb_id)""",
                     {**row, "manual_followup": int(row["manual_followup"])},
                 )
             else:

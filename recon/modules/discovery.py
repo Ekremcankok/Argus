@@ -61,7 +61,7 @@ class DiscoveryModule(Module):
                 confidence=Confidence.detected,
                 exploitable=Exploitable.na,
                 evidence_path=str((out_dir / "discovery.txt").as_posix()),
-                source_tool="nmap",
+                source_tool="nmap", kb_id="live-hosts",
                 notes=", ".join(sorted(found)),
             )]
         return []
