@@ -31,12 +31,21 @@ _STATIC = Path(__file__).parent / "static"
 _SEV_ORDER = ["critical", "high", "medium", "low", "info"]
 
 
+class CredentialInput(BaseModel):
+    domain: Optional[str] = None
+    username: str
+    password: Optional[str] = None
+    ntlm_hash: Optional[str] = None
+
+
 class ScanRequest(BaseModel):
     name: Optional[str] = None
+    description: Optional[str] = None
     include: list[str]
     exclude: list[str] = []
-    mode: str = "safe"
     modules: Optional[list[str]] = None
+    plugins: Optional[list[str]] = None        # seçili kb_id'ler (Nessus plugin)
+    credential: Optional[CredentialInput] = None
     dry_run: bool = False
 
 
@@ -88,13 +97,19 @@ class Job:
         for r in fs:
             counts[r["severity"]] = counts.get(r["severity"], 0) + 1
         inv = self.inventory()
+        cred = self.request.credential
         return {
             "id": self.id, "name": self.name, "status": self.status,
-            "mode": self.request.mode, "dry_run": self.request.dry_run,
+            "description": self.request.description,
+            "dry_run": self.request.dry_run,
             "started_at": self.started_at, "finished_at": self.finished_at,
             "run_dir": self.run_dir, "severity_counts": counts,
             "total": len(fs), "hosts": len(inv.get("hosts", {})),
             "include": self.request.include, "exclude": self.request.exclude,
+            "credentialed": bool(cred and cred.username),
+            "credential_principal": (f"{cred.domain}\\{cred.username}" if cred and cred.domain
+                                     else (cred.username if cred else None)),
+            "plugin_count": len(self.request.plugins) if self.request.plugins is not None else None,
         }
 
 
@@ -125,12 +140,23 @@ class JobManager:
         return None
 
     def _build_config(self, req: ScanRequest) -> Config:
+        # Taban config'ten dc/dns/lockout/concurrency alınır; scope + creds UI'dan.
         if self.base_config_path.exists():
             cfg = load_config(self.base_config_path)
             cfg.scope = ScopeConfig(include=req.include, exclude=req.exclude)
         else:
             cfg = Config(scope=ScopeConfig(include=req.include, exclude=req.exclude))
-        cfg.mode = Mode(req.mode)
+        cfg.mode = Mode.safe  # agresif/sömürü yok — yalnız tespit
+        # Kimlik bilgileri UI'dan gelir (kimlikli ya da anonim). Boşsa anonim.
+        from ..config import Credential
+        if req.credential and req.credential.username:
+            ci = req.credential
+            cfg.credentials = [Credential(
+                name="ui", domain=ci.domain or None, username=ci.username,
+                password=ci.password or None, ntlm_hash=ci.ntlm_hash or None,
+            )]
+        else:
+            cfg.credentials = []
         return cfg
 
     def start(self, req: ScanRequest) -> Job:
@@ -154,6 +180,7 @@ class JobManager:
 
         job = Job(id=uuid.uuid4().hex[:8], request=req)
         enabled = set(req.modules) if req.modules is not None else None
+        plugins = set(req.plugins) if req.plugins is not None else None
 
         def progress_cb(module: str, status: str, message: str = "") -> None:
             job.events.append(Event(time.time(), module, status, message))
@@ -162,7 +189,7 @@ class JobManager:
         run_dir = cfg.output_dir / f"{dt.date.today().isoformat()}_{job.id}"
         from ..orchestrator import Orchestrator
         orch = Orchestrator(cfg, run_dir=run_dir, dry_run=req.dry_run,
-                            enabled=enabled, progress_cb=progress_cb)
+                            enabled=enabled, plugins=plugins, progress_cb=progress_cb)
         job.orch = orch
         job.run_dir = str(orch.run_dir)
 
@@ -204,7 +231,7 @@ def _dashboard(job: Optional[Job]) -> dict:
     inv = job.inventory()
     return {
         "job_id": job.id, "name": job.name, "status": job.status,
-        "mode": job.request.mode, "dry_run": job.request.dry_run,
+        "dry_run": job.request.dry_run,
         "severity_counts": sev, "by_category": cat,
         "total": len(fs), "hosts": len(inv.get("hosts", {})),
         "manual": manual, "top": fs[:8],

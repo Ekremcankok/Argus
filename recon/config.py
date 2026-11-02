@@ -53,22 +53,31 @@ class Credential(BaseModel):
     name: str
     domain: Optional[str] = None
     username: str
+    # config.yaml için env-tabanlı (düz metin diske yazılmaz):
     password_env: Optional[str] = None
     ntlm_hash_env: Optional[str] = None
+    # UI/runtime için doğrudan (yalnız bellekte tutulur, diske/loga yazılmaz):
+    password: Optional[str] = None
+    ntlm_hash: Optional[str] = None
 
     @model_validator(mode="after")
     def _one_secret(self) -> "Credential":
-        if not self.password_env and not self.ntlm_hash_env:
+        if not any([self.password_env, self.ntlm_hash_env,
+                    self.password, self.ntlm_hash]):
             raise ValueError(
-                f"credential '{self.name}': password_env veya ntlm_hash_env gerekli"
+                f"credential '{self.name}': parola veya hash kaynağı gerekli"
             )
         return self
 
     def secret(self) -> tuple[str, str]:
         """(kind, value) döndürür. kind = 'password' | 'hash'.
 
-        Değer ortamdan okunur; config'te düz metin asla bulunmaz.
+        Öncelik: doğrudan (UI runtime) → env (config.yaml).
         """
+        if self.password:
+            return "password", self.password
+        if self.ntlm_hash:
+            return "hash", self.ntlm_hash
         if self.password_env:
             val = os.environ.get(self.password_env)
             if val is None:

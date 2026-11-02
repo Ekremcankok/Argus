@@ -34,12 +34,14 @@ class Orchestrator:
         run_dir: Optional[Path] = None,
         dry_run: bool = False,
         enabled: Optional[set[str]] = None,
+        plugins: Optional[set[str]] = None,
         progress_cb: Optional[ProgressCb] = None,
     ):
         load_builtin_modules()
         self.config = config
         self.dry_run = dry_run
         self.enabled = enabled           # None → default_enabled olanlar
+        self.plugins = plugins           # seçili kb_id kümesi (None = hepsi)
         self._external_cb = progress_cb
         self._stop = False
 
@@ -118,6 +120,7 @@ class Orchestrator:
                 config=self.config, scope=self.scope, runner=self.runner,
                 inventory=self.inventory, output_dir=self.run_dir,
                 progress=lambda m, msg: self._progress(m, "running", msg),
+                plugins=self.plugins,
             )
 
             reason = mod.requires(ctx)

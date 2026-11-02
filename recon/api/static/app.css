@@ -194,6 +194,48 @@ td.num{text-align:right;font-variant-numeric:tabular-nums}
 .minibars{display:inline-flex;gap:3px;align-items:center}
 .minibars i{width:5px;border-radius:2px;display:inline-block}
 
+/* ── tabs ── */
+.tabs{display:flex;gap:4px;border-bottom:1px solid var(--border);margin-bottom:18px}
+.tabs.tabs-pad{padding:14px 18px 0;margin-bottom:0;background:var(--panel2)}
+.tab{padding:10px 16px;cursor:pointer;font-weight:650;font-size:13.5px;color:var(--muted);
+  border-bottom:2px solid transparent;margin-bottom:-1px;user-select:none}
+.tab:hover{color:var(--fg)}
+.tab.on{color:#fff;border-bottom-color:var(--accent)}
+.tcount{font-size:11px;background:#223044;color:var(--muted);padding:1px 7px;border-radius:999px;margin-left:5px}
+.tab.on .tcount{background:var(--accent-dim);color:#fff}
+
+/* ── detail head ── */
+.detail-head{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;margin-bottom:6px}
+.dh-title{font-size:19px;font-weight:700;display:flex;align-items:center;gap:10px}
+.dh-sub{color:var(--muted);font-size:13px;margin-top:5px}
+
+/* ── form footer ── */
+.form-foot{display:flex;justify-content:flex-end;gap:10px;padding:16px 20px;
+  border-top:1px solid var(--border);background:var(--panel2)}
+
+/* ── segmented control ── */
+.seg{display:inline-flex;background:var(--bg);border:1px solid var(--border2);border-radius:10px;padding:3px;gap:3px}
+.segbtn{padding:8px 18px;border-radius:7px;cursor:pointer;font-weight:650;font-size:13px;color:var(--fg2)}
+.segbtn.on{background:var(--accent-dim);color:#fff}
+.disabled-block{opacity:.45;pointer-events:none}
+
+/* ── plugin picker ── */
+.plugbar{display:flex;align-items:center;justify-content:space-between;padding:4px 2px 14px;
+  border-bottom:1px solid var(--border);margin-bottom:12px}
+.selall{display:flex;align-items:center;gap:8px;font-weight:650;cursor:pointer}
+.selall input{width:16px;height:16px;accent-color:var(--accent)}
+.fam{border:1px solid var(--border);border-radius:10px;margin-bottom:10px;overflow:hidden}
+.fam-h{display:flex;align-items:center;gap:6px;padding:11px 14px;background:var(--panel2);font-size:14px}
+.fam-h label{display:flex;align-items:center;gap:9px;margin:0;color:var(--fg);cursor:pointer}
+.fam-h input{width:16px;height:16px;accent-color:var(--accent)}
+.fam-body{padding:4px 8px 8px}
+.plg{display:flex;align-items:center;gap:9px;padding:8px 10px;border-radius:7px;cursor:pointer}
+.plg:hover{background:var(--panel2)}
+.plg input{width:15px;height:15px;accent-color:var(--accent);flex:none}
+.plg .pn2{font-weight:600}
+.plg .pd{font-size:12px;margin-left:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:46%}
+.row{display:flex;gap:14px;flex-wrap:wrap}
+
 /* Dar panelde (Claude tarayıcı panosu ~768px) menü GÖRÜNÜR kalsın.
    Çok dar genişlikte (telefon) menü üstte yatay şerit olur, gizlenmez. */
 @media(max-width:760px){

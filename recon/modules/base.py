@@ -26,6 +26,11 @@ class ModuleContext:
     inventory: Inventory
     output_dir: Path                       # <çıktı>/<tarih>/ kökü
     progress: Callable[[str, str], None]   # (module_name, mesaj) canlı ilerleme
+    plugins: Optional[set[str]] = None     # seçili plugin (kb_id) kümesi; None = hepsi
+
+    def plugin_enabled(self, kb_id: str) -> bool:
+        """Bir kontrolün (plugin) bu taramada seçili olup olmadığı."""
+        return self.plugins is None or kb_id in self.plugins
 
     def phase_dir(self, module_name: str) -> Path:
         d = self.output_dir / module_name

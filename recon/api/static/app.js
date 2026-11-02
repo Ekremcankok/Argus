@@ -1,10 +1,15 @@
-// İç Ağ Recon Paneli — çok görünümlü SPA (bağımlılıksız)
+// İç Ağ Recon Paneli — Nessus tarzı SPA (bağımlılıksız)
 const SEV = ['critical','high','medium','low','info'];
 const SEV_TR = {critical:'Kritik',high:'Yüksek',medium:'Orta',low:'Düşük',info:'Bilgi'};
 const SEV_COLOR = {critical:'#ef4444',high:'#f97316',medium:'#eab308',low:'#22d3ee',info:'#8fa0b3'};
 const CAT_TR = {vuln:'Zafiyet',config:'Yapılandırma',cred:'Kimlik Bilgisi',service:'Servis',info:'Bilgi'};
+const FAM = {discovery:'Keşif',portscan:'Port & Servis',quickcve:'Hızlı CVE',
+  smb:'SMB / NetBIOS',ad:'Active Directory',kerberos:'Kerberos',
+  poison:'Ağ Zehirleme / Relay',postcred:'Kimlikli Post-Enum'};
+const FAM_ORDER = ['discovery','portscan','quickcve','smb','ad','kerberos','postcred','poison'];
+const BASE_MODULES = ['discovery','portscan']; // her zaman çalışan temel keşif
 
-const S = { modules:[], catalog:[], catById:{}, job:null, status:'idle' };
+const S = { modules:[], builtNames:new Set(), catalog:[], status:'idle', activeJob:null };
 
 const $ = s => document.querySelector(s);
 const esc = s => (s==null?'':String(s)).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -14,266 +19,129 @@ async function post(u,b){ const r=await fetch(u,{method:'POST',headers:{'Content
 const fmtTime = ts => ts? new Date(ts*1000).toLocaleString('tr-TR',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}) : '—';
 const sevBadge = s => `<span class="sev sev-${s}">${SEV_TR[s]||s}</span>`;
 const stBadge = s => `<span class="st st-${s}">${s}</span>`;
-
-function miniBars(counts){
-  return `<span class="minibars">`+SEV.map(s=>{const n=counts[s]||0; if(!n)return '';
-    const h=Math.min(18,6+n*2); return `<i class="bg-${s}" style="height:${h}px" title="${SEV_TR[s]}: ${n}"></i>`;}).join('')+`</span>`;
-}
-
-function donut(counts,total){
-  const r=52,c=2*Math.PI*r; let off=0; const segs=[];
-  SEV.forEach(s=>{const n=counts[s]||0; if(!n||!total)return; const frac=n/total; const len=frac*c;
-    segs.push(`<circle r="${r}" cx="70" cy="70" fill="none" stroke="${SEV_COLOR[s]}" stroke-width="18"
-      stroke-dasharray="${len} ${c-len}" stroke-dashoffset="${-off}" transform="rotate(-90 70 70)"/>`); off+=len;});
-  if(!segs.length) segs.push(`<circle r="${r}" cx="70" cy="70" fill="none" stroke="#1b2535" stroke-width="18"/>`);
-  return `<svg width="140" height="140" viewBox="0 0 140 140">${segs.join('')}
-    <text x="70" y="64" text-anchor="middle" fill="#dbe4ee" font-size="26" font-weight="800">${total}</text>
-    <text x="70" y="84" text-anchor="middle" fill="#7f8ea1" font-size="11">bulgu</text></svg>`;
-}
+function miniBars(counts){ return `<span class="minibars">`+SEV.map(s=>{const n=counts[s]||0; if(!n)return '';
+  const h=Math.min(18,6+n*2); return `<i class="bg-${s}" style="height:${h}px" title="${SEV_TR[s]}: ${n}"></i>`;}).join('')+`</span>`; }
 
 // ── router ──
 const routes = [
-  [/^#\/?$/, viewDashboard],
+  [/^#\/?$/, ()=>location.hash='#/scans'],
   [/^#\/scans$/, viewScans],
-  [/^#\/scans\/(.+)$/, viewScanDetail],
-  [/^#\/hosts$/, viewHosts],
-  [/^#\/host\/(.+)$/, viewHostDetail],
-  [/^#\/findings$/, viewFindings],
-  [/^#\/finding\/(.+)$/, viewFindingDetail],
-  [/^#\/catalog$/, viewCatalog],
-  [/^#\/catalog\/(.+)$/, viewCatalogDetail],
+  [/^#\/scans\/([^/]+)\/f\/(.+)$/, viewFinding],
+  [/^#\/scans\/([^/]+)$/, viewScanDetail],
   [/^#\/new$/, viewNew],
 ];
 function router(){
   const h=location.hash||'#/';
   for(const [re,fn] of routes){ const m=h.match(re); if(m){ setActiveNav(h); fn(...m.slice(1)); return; } }
-  viewDashboard();
+  location.hash='#/scans';
 }
-function setActiveNav(h){
-  document.querySelectorAll('.nav a').forEach(a=>{
-    const base='#/'+(h.split('/')[1]||'');
-    a.classList.toggle('active', a.getAttribute('href')===base || (base==='#/'&&a.getAttribute('href')==='#/'));
-  });
-}
+function setActiveNav(h){ document.querySelectorAll('.nav a').forEach(a=>a.classList.toggle('active',h.startsWith('#/scans'))); }
 function setTop(title,crumb){ $('#ttl').textContent=title; $('#crumb').innerHTML=crumb?`<span class="crumb">${crumb}</span>`:''; }
 const C = () => $('#content');
 
-// ── Dashboard ──
-async function viewDashboard(){
-  setTop('Genel Bakış','');
-  const d=await get('/api/dashboard');
-  if(d.status==='idle'){ C().innerHTML=`<div class="card"><div class="empty">Henüz tarama yok.<br><br>
-    <button class="primary" onclick="location.hash='#/new'">+ İlk taramayı başlat</button></div></div>`; return; }
-  const sc=d.severity_counts||{};
-  const tiles=[['critical','Kritik'],['high','Yüksek'],['medium','Orta'],['low','Düşük'],['info','Bilgi']]
-    .map(([k,l])=>`<div class="tile c-${k}"><div class="bar"></div><div class="n">${sc[k]||0}</div><div class="l">${l}</div></div>`).join('')
-    +`<div class="tile c-accent"><div class="bar"></div><div class="n">${d.hosts}</div><div class="l">Host</div></div>`
-    +`<div class="tile c-high"><div class="bar"></div><div class="n">${d.manual}</div><div class="l">Manuel aksiyon</div></div>`;
-  const legend=SEV.map(s=>`<div class="li"><span class="dot-sev bg-${s}"></span>
-    <span class="k">${SEV_TR[s]}</span><span class="v">${sc[s]||0}</span></div>`).join('');
-  const cats=Object.entries(d.by_category||{}).sort((a,b)=>b[1]-a[1]);
-  const maxc=Math.max(1,...cats.map(x=>x[1]));
-  const catbars=cats.length?cats.map(([k,v])=>`<div class="catbar"><div class="top"><span>${CAT_TR[k]||k}</span><span class="muted">${v}</span></div>
-    <div class="track"><div class="fill" style="width:${v/maxc*100}%"></div></div></div>`).join(''):'<div class="muted">—</div>';
-  const prog=S.modules.map(m=>{const st=d.module_status[m.name]||{}; const s=st.status||'pending';
-    return `<div class="prow"><span class="pdot ${s}"></span><span class="pn">${m.label||m.name}</span>
-      <span class="pm">${s}${st.message?' · '+esc(st.message):''}</span></div>`;}).join('');
-  const top=(d.top||[]).map(f=>`<tr class="clk" onclick="location.hash='#/finding/${encodeURIComponent(f.id)}'">
-    <td>${sevBadge(f.severity)}</td><td>${esc(f.title)}${f.manual_followup?' <span class="chip manual">MANUEL</span>':''}</td>
-    <td class="mono">${esc(f.host)}</td></tr>`).join('')||`<tr><td colspan="3" class="muted">Bulgu yok.</td></tr>`;
-
-  C().innerHTML=`
-    <div class="row" style="justify-content:space-between;align-items:center;margin-bottom:16px">
-      <div><span class="st st-${d.status}">${d.status}</span>
-        <span class="muted" style="margin-left:10px">${esc(d.name)} · ${d.mode}${d.dry_run?' · dry-run':''}</span></div>
-      <div class="muted">${fmtTime(d.started_at)}</div>
-    </div>
-    <div class="tiles" style="margin-bottom:16px">${tiles}</div>
-    <div class="grid" style="grid-template-columns:1fr 1fr">
-      <div class="card"><h2>Önem dağılımı</h2><div class="donut-wrap">${donut(sc,d.total)}<div class="legend">${legend}</div></div></div>
-      <div class="card"><h2>Kategoriye göre</h2><div class="catbars">${catbars}</div></div>
-    </div>
-    <div class="grid" style="grid-template-columns:1fr 1fr;margin-top:16px">
-      <div class="card"><h2>Faz ilerlemesi</h2><div class="plist">${prog}</div></div>
-      <div class="card"><h2>Öncelikli bulgular</h2><table><tbody>${top}</tbody></table></div>
-    </div>`;
-}
-
-// ── Scans ──
+// ── Taramalar listesi ──
 async function viewScans(){
   setTop('Taramalar','');
   const scans=await get('/api/scans');
+  $('#navcnt-scans').textContent=scans.length;
   if(!scans.length){ C().innerHTML=`<div class="card"><div class="empty">Henüz tarama yok.<br><br>
-    <button class="primary" onclick="location.hash='#/new'">+ Yeni tarama</button></div></div>`; return; }
+    <button class="primary" onclick="location.hash='#/new'">+ Yeni tarama oluştur</button></div></div>`; return; }
   const rows=scans.map(s=>`<tr class="clk" onclick="location.hash='#/scans/${s.id}'">
     <td><b>${esc(s.name)}</b><div class="muted mono" style="font-size:12px">${esc((s.include||[]).join(', '))}</div></td>
-    <td>${stBadge(s.status)}</td><td>${s.mode}${s.dry_run?' <span class="chip">dry</span>':''}</td>
+    <td>${stBadge(s.status)}</td>
+    <td>${s.credentialed?`<span class="chip">👤 ${esc(s.credential_principal||'kimlikli')}</span>`:'<span class="muted">anonim</span>'}</td>
     <td class="num">${s.hosts}</td><td class="num">${s.total}</td><td>${miniBars(s.severity_counts)}</td>
     <td class="muted">${fmtTime(s.started_at)}</td></tr>`).join('');
   C().innerHTML=`<div class="card" style="padding:4px 4px 0"><table>
-    <thead><tr><th>Tarama</th><th>Durum</th><th>Mod</th><th>Host</th><th>Bulgu</th><th>Önem</th><th>Başlangıç</th></tr></thead>
+    <thead><tr><th>Tarama</th><th>Durum</th><th>Kimlik</th><th>Host</th><th>Bulgu</th><th>Önem</th><th>Başlangıç</th></tr></thead>
     <tbody>${rows}</tbody></table></div>`;
 }
 
+// ── Tarama detayı (Nessus sekmeleri) ──
+let _sdTab='findings';
 async function viewScanDetail(id){
-  setTop('Tarama detayı',`<a href="#/scans">Taramalar</a> / ${id}`);
+  setTop('Tarama','<a href="#/scans">Taramalar</a>');
   const d=await get('/api/scans/'+id);
-  const prog=S.modules.map(m=>{const st=d.module_status[m.name]||{}; const s=st.status||'pending';
-    return `<div class="prow"><span class="pdot ${s}"></span><span class="pn">${m.label||m.name}</span>
-      <span class="pm">${s}${st.message?' · '+esc(st.message):''}</span></div>`;}).join('');
-  const ev=(d.events||[]).map(e=>`<div class="e-${e.status}">${fmtTime(e.ts).split(' ').pop()}  ${e.module}  [${e.status}]  ${esc(e.message||'')}</div>`).join('');
-  C().innerHTML=`
-    <div class="row" style="justify-content:space-between;margin-bottom:16px">
-      <div><span class="st st-${d.status}">${d.status}</span>
-        <span class="muted" style="margin-left:10px">${esc(d.name)} · ${d.mode}${d.dry_run?' · dry-run':''}</span>
-        ${d.status==='running'?'<button class="danger" style="margin-left:12px" onclick="stopScan()">■ Durdur</button>':''}</div>
-      <div class="row">
-        <button onclick="location.hash='#/findings'">Bulgular (${d.total})</button>
-        <button onclick="location.hash='#/hosts'">Hostlar (${d.hosts})</button></div>
+  const credLine = d.credentialed?`<span class="chip">👤 ${esc(d.credential_principal)}</span>`:'<span class="muted">anonim tarama</span>';
+  const head=`
+    <div class="detail-head">
+      <div>
+        <div class="dh-title">${esc(d.name)} ${stBadge(d.status)}</div>
+        <div class="dh-sub">${credLine} · <span class="mono">${esc((d.include||[]).join(', '))}</span> · ${fmtTime(d.started_at)}${d.dry_run?' · <span class="chip">dry-run</span>':''}</div>
+        ${d.description?`<div class="muted" style="margin-top:4px">${esc(d.description)}</div>`:''}
+      </div>
+      <div>${d.status==='running'?`<button class="danger" onclick="stopScan()">■ Durdur</button>`:''}</div>
     </div>
-    <div class="kv card" style="margin-bottom:16px">
-      <span class="k">Kapsam</span><span class="mono">${esc((d.include||[]).join(', '))}</span>
-      <span class="k">Hariç</span><span class="mono">${esc((d.exclude||[]).join(', '))||'—'}</span>
-      <span class="k">Koşu dizini</span><span class="mono">${esc(d.run_dir)}</span>
-      <span class="k">Başlangıç</span><span>${fmtTime(d.started_at)}</span>
-      ${d.error?`<span class="k">Hata</span><span style="color:var(--fail)">${esc(d.error)}</span>`:''}
-    </div>
-    <div class="grid" style="grid-template-columns:1fr 1fr">
-      <div class="card"><h2>Faz ilerlemesi</h2><div class="plist">${prog}</div></div>
-      <div class="card"><h2>Olay akışı</h2><div class="log">${ev||'<span class="muted">—</span>'}</div></div>
+    <div class="tabs">
+      <span class="tab ${_sdTab==='findings'?'on':''}" onclick="sdTab('findings','${id}')">Bulgular <span class="tcount">${d.total}</span></span>
+      <span class="tab ${_sdTab==='hosts'?'on':''}" onclick="sdTab('hosts','${id}')">Hostlar <span class="tcount">${d.hosts}</span></span>
+      <span class="tab ${_sdTab==='progress'?'on':''}" onclick="sdTab('progress','${id}')">İlerleme</span>
     </div>`;
+  C().innerHTML=head+`<div id="sdbody"></div>`;
+  renderSdBody(id,d);
 }
+window.sdTab=(t,id)=>{ _sdTab=t; viewScanDetail(id); };
 window.stopScan=async()=>{ await post('/api/stop'); };
 
-// ── Hosts ──
-async function viewHosts(){
-  setTop('Hostlar','');
-  const inv=await get('/api/hosts');
-  const hosts=inv.hosts||{};
-  const keys=Object.keys(hosts);
-  if(!keys.length){ C().innerHTML=`<div class="card"><div class="empty">Host envanteri boş. Önce bir tarama çalıştırın.</div></div>`; return; }
-  const rows=keys.map(ip=>{const h=hosts[ip];
-    const roles=(h.roles||[]).map(r=>`<span class="chip role">${r}</span>`).join(' ');
-    return `<tr class="clk" onclick="location.hash='#/host/${encodeURIComponent(ip)}'">
-      <td class="mono"><b>${esc(ip)}</b></td><td>${esc(h.hostname||'')}</td>
-      <td class="muted">${esc(h.os||'—')}</td><td>${roles||'<span class="muted">—</span>'}</td>
-      <td class="num">${(h.ports||[]).length}</td>
-      <td>${h.smb_signing===false?'<span class="chip manual">signing yok</span>':(h.smb_signing===true?'<span class="chip">imzalı</span>':'<span class="muted">—</span>')}</td>
-      <td class="num">${h.finding_count||0}</td></tr>`;}).join('');
-  C().innerHTML=`<div class="card" style="padding:4px 4px 0"><table>
-    <thead><tr><th>IP</th><th>Hostname</th><th>OS</th><th>Roller</th><th>Port</th><th>SMB</th><th>Bulgu</th></tr></thead>
-    <tbody>${rows}</tbody></table></div>`;
-}
-
-async function viewHostDetail(ip){
-  ip=decodeURIComponent(ip);
-  setTop('Host: '+ip,`<a href="#/hosts">Hostlar</a> / ${ip}`);
-  const [inv,finds]=await Promise.all([get('/api/hosts'),get('/api/findings')]);
-  const h=(inv.hosts||{})[ip]||{};
-  const svcRows=Object.entries(h.services||{}).sort((a,b)=>a[0]-b[0]).map(([p,s])=>`<tr>
-    <td class="mono">${p}</td><td>${esc(s.name||'')}</td><td class="muted">${esc([s.product,s.version].filter(Boolean).join(' '))||'—'}</td></tr>`).join('')
-    ||'<tr><td colspan="3" class="muted">Servis bilgisi yok.</td></tr>';
-  const hf=finds.filter(f=>f.host===ip).map(f=>`<tr class="clk" onclick="location.hash='#/finding/${encodeURIComponent(f.id)}'">
-    <td>${sevBadge(f.severity)}</td><td>${esc(f.title)}</td><td class="mono">${f.port||''}</td>
-    <td><span class="chip">${f.confidence}</span></td></tr>`).join('')
-    ||'<tr><td colspan="4" class="muted">Bu host için bulgu yok.</td></tr>';
-  C().innerHTML=`<div class="backlink" onclick="location.hash='#/hosts'">← Hostlar</div>
-    <div class="kv card" style="margin-bottom:16px">
-      <span class="k">IP</span><span class="mono">${esc(ip)}</span>
-      <span class="k">Hostname</span><span>${esc(h.hostname||'—')}</span>
-      <span class="k">OS</span><span>${esc(h.os||'—')}</span>
-      <span class="k">Roller</span><span>${(h.roles||[]).map(r=>`<span class="chip role">${r}</span>`).join(' ')||'—'}</span>
-      <span class="k">SMB signing</span><span>${h.smb_signing===false?'kapalı (relay hedefi)':(h.smb_signing===true?'zorunlu':'—')}</span>
-    </div>
-    <div class="grid" style="grid-template-columns:1fr 1fr">
-      <div class="card"><h2>Açık servisler</h2><table><thead><tr><th>Port</th><th>Servis</th><th>Sürüm</th></tr></thead><tbody>${svcRows}</tbody></table></div>
-      <div class="card"><h2>Bulgular</h2><table><tbody>${hf}</tbody></table></div>
-    </div>`;
-}
-
-// ── Findings ──
-let _ffilter={sev:'all',q:''};
-async function viewFindings(){
-  setTop('Bulgular','');
-  const finds=await get('/api/findings');
-  const render=()=>{
-    const f=finds.filter(x=>(_ffilter.sev==='all'||x.severity===_ffilter.sev)
-      &&(!_ffilter.q||(x.title+x.host+(x.source_tool||'')).toLowerCase().includes(_ffilter.q.toLowerCase())));
-    const rows=f.map(x=>`<tr class="clk" onclick="location.hash='#/finding/${encodeURIComponent(x.id)}'">
+async function renderSdBody(id,d){
+  const body=$('#sdbody'); if(!body)return;
+  if(_sdTab==='findings'){
+    const f=await get('/api/findings?job_id='+id);
+    if(!f.length){ body.innerHTML=`<div class="card"><div class="empty">${d.status==='running'?'Taranıyor… bulgu bekleniyor.':'Bu taramada bulgu yok.'}</div></div>`; return; }
+    const rows=f.map(x=>`<tr class="clk" onclick="location.hash='#/scans/${id}/f/${encodeURIComponent(x.id)}'">
       <td>${sevBadge(x.severity)}</td><td>${esc(x.title)}${x.manual_followup?' <span class="chip manual">MANUEL</span>':''}</td>
       <td class="mono">${esc(x.host)}</td><td class="mono">${x.port||''}</td>
-      <td><span class="chip">${x.confidence}</span></td><td><span class="chip">${x.exploitable}</span></td>
-      <td class="muted">${esc(x.source_tool||'')}</td></tr>`).join('')
-      ||`<tr><td colspan="7" class="empty">Eşleşen bulgu yok.</td></tr>`;
-    $('#ftable').innerHTML=rows;
-    $('#fcount').textContent=f.length;
-  };
-  const chips=['all',...SEV].map(s=>`<span class="fchip ${_ffilter.sev===s?'on':''}" data-sev="${s}">${s==='all'?'Tümü':SEV_TR[s]}</span>`).join('');
-  C().innerHTML=`<div class="filters">${chips}
-    <input class="search" id="fsearch" type="text" placeholder="Ara: başlık, host, araç…" value="${esc(_ffilter.q)}">
-    <span class="right muted"><b id="fcount">0</b> bulgu</span></div>
-    <div class="card" style="padding:4px 4px 0"><table>
-      <thead><tr><th>Önem</th><th>Başlık</th><th>Host</th><th>Port</th><th>Güven</th><th>Sömürü</th><th>Araç</th></tr></thead>
-      <tbody id="ftable"></tbody></table></div>`;
-  document.querySelectorAll('.fchip').forEach(c=>c.onclick=()=>{_ffilter.sev=c.dataset.sev;
-    document.querySelectorAll('.fchip').forEach(x=>x.classList.toggle('on',x===c));render();});
-  $('#fsearch').oninput=e=>{_ffilter.q=e.target.value;render();};
-  render();
+      <td><span class="chip">${x.confidence}</span></td><td class="muted">${esc(x.source_tool||'')}</td></tr>`).join('');
+    body.innerHTML=`<div class="card" style="padding:4px 4px 0"><table>
+      <thead><tr><th>Önem</th><th>Başlık</th><th>Host</th><th>Port</th><th>Güven</th><th>Araç</th></tr></thead>
+      <tbody>${rows}</tbody></table></div>`;
+  } else if(_sdTab==='hosts'){
+    const inv=await get('/api/hosts?job_id='+id); const hosts=inv.hosts||{};
+    const keys=Object.keys(hosts);
+    if(!keys.length){ body.innerHTML=`<div class="card"><div class="empty">Host envanteri boş.</div></div>`; return; }
+    const rows=keys.map(ip=>{const h=hosts[ip];
+      const roles=(h.roles||[]).map(r=>`<span class="chip role">${r}</span>`).join(' ');
+      return `<tr><td class="mono"><b>${esc(ip)}</b></td><td>${esc(h.hostname||'')}</td>
+        <td class="muted">${esc(h.os||'—')}</td><td>${roles||'<span class="muted">—</span>'}</td>
+        <td class="num">${(h.ports||[]).length}</td>
+        <td>${h.smb_signing===false?'<span class="chip manual">signing yok</span>':'<span class="muted">—</span>'}</td>
+        <td class="num">${h.finding_count||0}</td></tr>`;}).join('');
+    body.innerHTML=`<div class="card" style="padding:4px 4px 0"><table>
+      <thead><tr><th>IP</th><th>Hostname</th><th>OS</th><th>Roller</th><th>Port</th><th>SMB</th><th>Bulgu</th></tr></thead>
+      <tbody>${rows}</tbody></table></div>`;
+  } else {
+    const prog=S.modules.map(m=>{const st=d.module_status[m.name]||{}; const s=st.status||'pending';
+      return `<div class="prow"><span class="pdot ${s}"></span><span class="pn">${m.label||m.name}</span>
+        <span class="pm">${s}${st.message?' · '+esc(st.message):''}</span></div>`;}).join('');
+    const ev=(d.events||[]).map(e=>`<div class="e-${e.status}">${fmtTime(e.ts).split(' ').pop()}  ${e.module}  [${e.status}]  ${esc(e.message||'')}</div>`).join('');
+    body.innerHTML=`<div class="grid" style="grid-template-columns:1fr 1fr">
+      <div class="card"><h2>Faz ilerlemesi</h2><div class="plist">${prog}</div></div>
+      <div class="card"><h2>Olay akışı</h2><div class="log">${ev||'<span class="muted">—</span>'}</div></div></div>`;
+  }
 }
 
-async function viewFindingDetail(id){
-  id=decodeURIComponent(id);
-  setTop('Bulgu detayı',`<a href="#/findings">Bulgular</a>`);
-  const finds=await get('/api/findings');
-  const f=finds.find(x=>x.id===id);
+// ── Bulgu detayı (katalog kartı gömülü) ──
+async function viewFinding(id,fid){
+  fid=decodeURIComponent(fid);
+  setTop('Bulgu',`<a href="#/scans">Taramalar</a> / <a href="#/scans/${id}">tarama</a>`);
+  const finds=await get('/api/findings?job_id='+id);
+  const f=finds.find(x=>x.id===fid);
   if(!f){ C().innerHTML='<div class="card"><div class="empty">Bulgu bulunamadı.</div></div>'; return; }
   let kb=null; if(f.kb_id){ try{ kb=await get('/api/catalog/'+f.kb_id);}catch(e){} }
-  C().innerHTML=`<div class="backlink" onclick="location.hash='#/findings'">← Bulgular</div>
+  C().innerHTML=`<div class="backlink" onclick="history.back()">← Geri</div>
     <div class="card" style="margin-bottom:16px">
       <div class="kb-head">${sevBadge(f.severity)}<h1 style="margin:0;font-size:20px">${esc(f.title)}</h1></div>
       <div class="kv" style="margin-top:12px">
         <span class="k">Host</span><span class="mono">${esc(f.host)}${f.port?':'+f.port:''}</span>
         <span class="k">Faz</span><span>${esc(f.phase)}</span>
-        <span class="k">Kategori</span><span>${CAT_TR[f.category]||f.category}</span>
         <span class="k">Güven</span><span>${f.confidence}</span>
         <span class="k">Sömürülebilir</span><span>${f.exploitable}${f.manual_followup?' <span class="chip manual">MANUEL DOĞRULA</span>':''}</span>
         <span class="k">Kaynak araç</span><span>${esc(f.source_tool||'—')}</span>
         <span class="k">Kanıt</span><span class="mono" style="font-size:12px">${esc(f.evidence_path||'—')}</span>
         ${f.notes?`<span class="k">Not</span><span>${esc(f.notes)}</span>`:''}
-      </div>
-    </div>
+      </div></div>
     ${kb?kbCard(kb):'<div class="card muted">Bu bulgu için katalog kaydı yok.</div>'}`;
 }
-
-// ── Catalog ──
-let _cfilter={cat:'all',q:''};
-async function viewCatalog(){
-  setTop('Zafiyet Kataloğu','');
-  if(!S.catalog.length) S.catalog=await get('/api/catalog');
-  const cats=['all',...[...new Set(S.catalog.map(e=>e.category))]];
-  const render=()=>{
-    const list=S.catalog.filter(e=>(_cfilter.cat==='all'||e.category===_cfilter.cat)
-      &&(!_cfilter.q||(e.title+(e.summary||'')+(e.tags||[]).join()).toLowerCase().includes(_cfilter.q.toLowerCase())));
-    $('#clist').innerHTML=list.map(e=>`<tr class="clk" onclick="location.hash='#/catalog/${e.id}'">
-      <td>${sevBadge(e.severity)}</td><td><b>${esc(e.title)}</b><div class="muted" style="font-size:12.5px">${esc(e.summary||'')}</div></td>
-      <td>${CAT_TR[e.category]||e.category}</td>
-      <td>${(e.cve||[]).slice(0,2).map(c=>`<span class="chip cve">${esc(c)}</span>`).join(' ')}${e.manual_only?' <span class="chip manual">manuel</span>':''}</td></tr>`).join('')
-      ||`<tr><td colspan="4" class="empty">Eşleşen kayıt yok.</td></tr>`;
-    $('#ccount').textContent=list.length;
-  };
-  const chips=cats.map(c=>`<span class="fchip ${_cfilter.cat===c?'on':''}" data-cat="${c}">${c==='all'?'Tümü':(CAT_TR[c]||c)}</span>`).join('');
-  C().innerHTML=`<div class="filters">${chips}
-    <input class="search" id="csearch" type="text" placeholder="Ara: başlık, etiket…" value="${esc(_cfilter.q)}">
-    <span class="right muted"><b id="ccount">0</b> kayıt</span></div>
-    <div class="card" style="padding:4px 4px 0"><table>
-      <thead><tr><th>Önem</th><th>Başlık</th><th>Kategori</th><th>CVE</th></tr></thead>
-      <tbody id="clist"></tbody></table></div>`;
-  document.querySelectorAll('.fchip').forEach(c=>c.onclick=()=>{_cfilter.cat=c.dataset.cat;
-    document.querySelectorAll('.fchip').forEach(x=>x.classList.toggle('on',x===c));render();});
-  $('#csearch').oninput=e=>{_cfilter.q=e.target.value;render();};
-  render();
-}
-
 function kbCard(e){
   const cve=(e.cve||[]).map(c=>`<span class="chip cve">${esc(c)}</span>`).join(' ');
   const mitre=(e.mitre||[]).map(c=>`<span class="chip mitre">${esc(c)}</span>`).join(' ');
@@ -284,104 +152,164 @@ function kbCard(e){
     <div class="kb-head">${sevBadge(e.severity)}<h2 style="text-transform:none;letter-spacing:0;color:var(--fg);font-size:17px;margin:0">${esc(e.title)}</h2>
       ${e.manual_only?'<span class="chip manual">sömürü manuel</span>':''}</div>
     <div style="margin:6px 0 16px">${cve} ${mitre} ${tags}</div>
-    ${sec('Özet',e.summary)}
-    ${sec('Açıklama',e.description)}
+    ${sec('Özet',e.summary)}${sec('Açıklama',e.description)}
     ${sec('Sömürü yolu',e.exploitation,e.manual_only?'crit':'')}
     ${sec('Çözüm önerisi',e.remediation)}
-    ${refs?`<div class="kb-sec"><h4>Referanslar</h4><ul style="margin:0;padding-left:18px">${refs}</ul></div>`:''}
-  </div>`;
+    ${refs?`<div class="kb-sec"><h4>Referanslar</h4><ul style="margin:0;padding-left:18px">${refs}</ul></div>`:''}</div>`;
 }
 
-async function viewCatalogDetail(id){
-  setTop('Katalog kaydı',`<a href="#/catalog">Zafiyet Kataloğu</a>`);
-  let e; try{ e=await get('/api/catalog/'+id);}catch(err){ C().innerHTML='<div class="card"><div class="empty">Kayıt bulunamadı.</div></div>'; return; }
-  C().innerHTML=`<div class="backlink" onclick="location.hash='#/catalog'">← Zafiyet Kataloğu</div>${kbCard(e)}`;
-}
-
-// ── New Scan ──
-let _newMode='safe';
+// ── Yeni Tarama (sekmeli) ──
+let _newTab='settings';
+let _cred=false;             // kimlikli mi
+let _pluginSel=null;         // Set<kb_id> | null(hepsi)
 async function viewNew(){
-  setTop('Yeni Tarama','');
+  setTop('Yeni Tarama','<a href="#/scans">Taramalar</a>');
+  if(!S.catalog.length) S.catalog=await get('/api/catalog');
   const d=await get('/api/defaults');
-  _newMode=d.mode||'safe';
-  const credWarn=d.has_credentials?'':`<div class="callout" style="margin-top:12px">⚠ config.yaml'de kimlik bilgisi yok — kimlik gerektiren modüller atlanır.</div>`;
-  C().innerHTML=`<div class="grid" style="grid-template-columns:1fr 1fr;align-items:start">
-    <div class="card">
-      <h2>Kapsam & Politika</h2>
-      <label class="fld">Include ağları (her satıra bir CIDR/IP)</label>
-      <textarea id="inc" class="mono" rows="3" placeholder="192.168.1.0/24">${esc((d.include||[]).join('\n'))}</textarea>
-      <label class="fld">Hariç (exclude — her zaman kazanır)</label>
-      <textarea id="exc" class="mono" rows="2" placeholder="192.168.1.1&#10;192.168.1.30">${esc((d.exclude||[]).join('\n'))}</textarea>
-      <label class="fld">Tarama adı (opsiyonel)</label>
-      <input id="nm" type="text" placeholder="örn. Lab - Haftalık">
-      <label class="fld">Mod</label>
-      <div class="row" style="gap:8px">
-        <span class="fchip ${_newMode==='safe'?'on':''}" data-mode="safe">Safe</span>
-        <span class="fchip ${_newMode==='aggressive'?'on':''}" data-mode="aggressive">Aggressive (intrusive)</span>
+  if(_pluginSel===null){ _pluginSel=new Set(S.catalog.map(e=>e.id)); } // varsayılan: hepsi
+  window._defaults=d;
+  C().innerHTML=`
+    <div class="card" style="padding:0;overflow:hidden">
+      <div class="tabs tabs-pad">
+        <span class="tab ${_newTab==='settings'?'on':''}" onclick="newTab('settings')">Ayarlar</span>
+        <span class="tab ${_newTab==='creds'?'on':''}" onclick="newTab('creds')">Kimlik Bilgileri</span>
+        <span class="tab ${_newTab==='plugins'?'on':''}" onclick="newTab('plugins')">Pluginler <span class="tcount" id="pcount"></span></span>
       </div>
-      <label class="fld" style="margin-top:14px"><input type="checkbox" id="dry"> Dry-run (komutları yaz, çalıştırma)</label>
-      ${credWarn}
-      <div style="margin-top:18px"><button class="primary" id="startBtn" style="width:100%">▶ Taramayı Başlat</button></div>
-    </div>
-    <div class="card"><h2>Modüller (plugin)</h2><div id="modpick"></div></div>
-  </div>`;
-  renderModPick();
-  document.querySelectorAll('.fchip[data-mode]').forEach(c=>c.onclick=()=>{_newMode=c.dataset.mode;
-    document.querySelectorAll('.fchip[data-mode]').forEach(x=>x.classList.toggle('on',x===c));renderModPick();});
+      <div id="newbody" style="padding:20px"></div>
+      <div class="form-foot">
+        <button onclick="location.hash='#/scans'">İptal</button>
+        <button class="primary" id="startBtn">▶ Taramayı Başlat</button>
+      </div>
+    </div>`;
+  renderNewBody();
   $('#startBtn').onclick=startScan;
+  updatePCount();
 }
-function renderModPick(){
-  const byPhase={};
-  S.modules.forEach(m=>{(byPhase[m.phase]=byPhase[m.phase]||[]).push(m);});
-  const html=Object.keys(byPhase).sort((a,b)=>a-b).map(ph=>`
-    <div class="phase-group"><div class="phase-h">Faz ${ph}</div>
-    ${byPhase[ph].map(m=>{const gated=m.intrusive&&_newMode!=='aggressive';
-      return `<label class="mod"><input type="checkbox" class="mchk" value="${m.name}" ${m.default_enabled&&!gated?'checked':''} ${gated?'disabled':''}>
-      <div class="mm"><div class="mn">${esc(m.label||m.name)}
-        ${m.intrusive?'<span class="chip manual" style="margin-left:6px">intrusive</span>':''}</div>
-        <div class="md">${esc(m.description||'')}</div></div></label>`;}).join('')}</div>`).join('');
-  $('#modpick').innerHTML=html;
+window.newTab=(t)=>{ saveSettings(); _newTab=t; renderNewBody(); };
+function saveSettings(){ // sekme değişince form değerlerini sakla
+  const g=id=>{const e=$('#'+id);return e?e.value:undefined;};
+  const chk=id=>{const e=$('#'+id);return e?e.checked:undefined;};
+  if($('#inc')!==null){ window._f={inc:g('inc'),exc:g('exc'),nm:g('nm'),desc:g('desc'),dry:chk('dry')}; }
+  if($('#cu')!==null){ window._c={dom:g('cdom'),user:g('cu'),pw:g('cpw'),hash:g('chash')}; _cred=chk('credon'); }
 }
+function renderNewBody(){
+  const f=window._f||{}, d=window._defaults||{}, c=window._c||{};
+  const body=$('#newbody');
+  if(_newTab==='settings'){
+    body.innerHTML=`
+      <label class="fld">Tarama adı</label>
+      <input id="nm" type="text" placeholder="örn. Lab - İç Ağ" value="${esc(f.nm||'')}">
+      <label class="fld">Açıklama (opsiyonel)</label>
+      <input id="desc" type="text" placeholder="kısa not" value="${esc(f.desc||'')}">
+      <label class="fld">Hedefler — include (her satıra bir CIDR/IP)</label>
+      <textarea id="inc" class="mono" rows="3" placeholder="192.168.1.0/24">${esc(f.inc!==undefined?f.inc:(d.include||[]).join('\n'))}</textarea>
+      <label class="fld">Hariç — exclude (her zaman kazanır)</label>
+      <textarea id="exc" class="mono" rows="2" placeholder="192.168.1.1&#10;192.168.1.30">${esc(f.exc!==undefined?f.exc:(d.exclude||[]).join('\n'))}</textarea>
+      <label class="fld" style="margin-top:14px"><input type="checkbox" id="dry" ${f.dry?'checked':''}> Dry-run (komutları yaz, çalıştırma)</label>`;
+  } else if(_newTab==='creds'){
+    body.innerHTML=`
+      <div class="seg">
+        <span class="segbtn ${!_cred?'on':''}" onclick="setCred(false)">Anonim tarama</span>
+        <span class="segbtn ${_cred?'on':''}" onclick="setCred(true)">Kimlikli (Windows / AD)</span>
+      </div>
+      <input type="checkbox" id="credon" ${_cred?'checked':''} style="display:none">
+      <div class="muted" style="margin:12px 0">${_cred
+        ? 'Domain kullanıcısıyla AD/SMB numaralandırma (Kerberoast, share, LDAP) yapılır. Parola yalnızca bellekte tutulur, loga/diske yazılmaz.'
+        : 'Kimlik bilgisi olmadan — yalnız anonim/null erişim ve ağ seviyesi tespit.'}</div>
+      <div class="${_cred?'':'disabled-block'}">
+        <div class="row">
+          <div style="flex:1"><label class="fld">Domain</label>
+            <input id="cdom" type="text" placeholder="lab.local" value="${esc(c.dom||'')}" ${_cred?'':'disabled'}></div>
+          <div style="flex:1"><label class="fld">Kullanıcı adı</label>
+            <input id="cu" type="text" placeholder="lowpriv" value="${esc(c.user||'')}" ${_cred?'':'disabled'}></div>
+        </div>
+        <label class="fld">Parola</label>
+        <input id="cpw" type="password" placeholder="••••••••" value="${esc(c.pw||'')}" ${_cred?'':'disabled'}>
+        <label class="fld">— veya NTLM hash (pass-the-hash)</label>
+        <input id="chash" class="mono" type="text" placeholder="aad3b4...:31d6cf..." value="${esc(c.hash||'')}" ${_cred?'':'disabled'}>
+      </div>`;
+  } else {
+    renderPlugins(body);
+  }
+  updatePCount();
+}
+window.setCred=(v)=>{ saveSettings(); _cred=v; renderNewBody(); };
+
+function renderPlugins(body){
+  const byFam={}; S.catalog.forEach(e=>{(byFam[e.phase]=byFam[e.phase]||[]).push(e);});
+  const fams=FAM_ORDER.filter(p=>byFam[p]).concat(Object.keys(byFam).filter(p=>!FAM_ORDER.includes(p)));
+  const total=S.catalog.length, sel=_pluginSel.size;
+  let html=`<div class="plugbar">
+    <label class="selall"><input type="checkbox" id="selall" ${sel===total?'checked':''}> Tümünü seç</label>
+    <span class="right muted"><b id="selcount">${sel}</b> / ${total} plugin seçili</span></div>`;
+  html+=fams.map(p=>{
+    const items=byFam[p]; const ids=items.map(i=>i.id);
+    const on=ids.filter(i=>_pluginSel.has(i)).length;
+    const built=S.builtNames.has(p);
+    return `<div class="fam">
+      <div class="fam-h">
+        <label><input type="checkbox" class="famchk" data-fam="${p}" ${on===ids.length?'checked':''} ${on>0&&on<ids.length?'indeterminate':''}>
+        <b>${FAM[p]||p}</b></label>
+        ${built?'':'<span class="chip" style="margin-left:8px">yakında</span>'}
+        <span class="right muted">${on}/${ids.length}</span>
+      </div>
+      <div class="fam-body">${items.map(i=>`<label class="plg">
+        <input type="checkbox" class="plgchk" data-id="${i.id}" data-fam="${p}" ${_pluginSel.has(i.id)?'checked':''}>
+        ${sevBadge(i.severity)} <span class="pn2">${esc(i.title)}</span>
+        <span class="muted pd">${esc(i.summary||'')}</span></label>`).join('')}</div>
+    </div>`;}).join('');
+  body.innerHTML=html;
+  // indeterminate state
+  document.querySelectorAll('.famchk').forEach(ch=>{const fam=ch.dataset.fam;
+    const ids=byFam[fam].map(i=>i.id); const on=ids.filter(i=>_pluginSel.has(i)).length;
+    ch.indeterminate = on>0 && on<ids.length;});
+  // handlers
+  $('#selall').onchange=e=>{ if(e.target.checked)_pluginSel=new Set(S.catalog.map(x=>x.id)); else _pluginSel=new Set(); renderPlugins(body); };
+  document.querySelectorAll('.famchk').forEach(ch=>ch.onchange=()=>{const fam=ch.dataset.fam;
+    byFam[fam].forEach(i=>{ if(ch.checked)_pluginSel.add(i.id); else _pluginSel.delete(i.id);}); renderPlugins(body);});
+  document.querySelectorAll('.plgchk').forEach(ch=>ch.onchange=()=>{ if(ch.checked)_pluginSel.add(ch.dataset.id); else _pluginSel.delete(ch.dataset.id); renderPlugins(body);});
+  updatePCount();
+}
+function updatePCount(){ const el=$('#pcount'); if(el&&_pluginSel) el.textContent=_pluginSel.size; }
+
 async function startScan(){
-  const include=$('#inc').value.split('\n').map(s=>s.trim()).filter(Boolean);
-  const exclude=$('#exc').value.split('\n').map(s=>s.trim()).filter(Boolean);
-  if(!include.length){ alert('En az bir include ağı gir.'); return; }
-  const modules=[...document.querySelectorAll('.mchk:checked')].map(c=>c.value);
-  const body={name:$('#nm').value.trim()||null,include,exclude,mode:_newMode,modules,dry_run:$('#dry').checked};
-  try{ await post('/api/scan',body); location.hash='#/scans'; }
+  saveSettings();
+  const f=window._f||{}, c=window._c||{};
+  const include=(f.inc||'').split('\n').map(s=>s.trim()).filter(Boolean);
+  const exclude=(f.exc||'').split('\n').map(s=>s.trim()).filter(Boolean);
+  if(!include.length){ alert('Ayarlar sekmesinde en az bir hedef (include) gir.'); _newTab='settings'; renderNewBody(); return; }
+  // seçili pluginlerden modülleri türet (temel keşif her zaman)
+  const selPhases=new Set(S.catalog.filter(e=>_pluginSel.has(e.id)).map(e=>e.phase));
+  const modules=[...new Set([...BASE_MODULES, ...[...selPhases].filter(p=>S.builtNames.has(p))])];
+  const body={name:f.nm||null, description:f.desc||null, include, exclude,
+    modules, plugins:[..._pluginSel], dry_run:!!f.dry};
+  if(_cred && c.user){ body.credential={domain:c.dom||null, username:c.user, password:c.pw||null, ntlm_hash:c.hash||null}; }
+  try{ await post('/api/scan',body); resetNew(); location.hash='#/scans'; }
   catch(e){ alert('Hata: '+e.message); }
 }
+function resetNew(){ _newTab='settings'; _cred=false; _pluginSel=null; window._f=null; window._c=null; }
 
 // ── WebSocket (canlı) ──
 function connectWS(){
   const ws=new WebSocket(`ws://${location.host}/ws`);
-  ws.onmessage=ev=>{
-    const m=JSON.parse(ev.data);
-    if(m.type==='job'){
-      const changed=S.status!==m.status; S.status=m.status; S.job=m.job_id;
+  ws.onmessage=ev=>{ const m=JSON.parse(ev.data);
+    if(m.type==='job'){ const changed=S.status!==m.status; S.status=m.status; S.activeJob=m.job_id;
       updateStatusPill(m.status);
       const h=location.hash||'#/';
-      // Canlı görünümdeysek tazele
-      if((h==='#/'||h==='#/scans'||h.startsWith('#/scans/')||h==='#/hosts'||h==='#/findings') && (m.status==='running'||changed))
-        router();
-    }
-  };
+      if((h==='#/scans'||h===('#/scans/'+m.job_id)) && (m.status==='running'||changed)) router();
+    }};
   ws.onclose=()=>setTimeout(connectWS,1500);
 }
-function updateStatusPill(s){
-  const p=$('#statuspill'); if(!p)return;
-  p.className='st st-'+(s||'idle'); p.textContent=s||'idle';
-  p.style.display = (s&&s!=='idle')?'inline-block':'none';
-}
+function updateStatusPill(s){ const p=$('#statuspill'); if(!p)return;
+  p.className='st st-'+(s||'idle'); p.textContent=s||'idle'; p.style.display=(s&&s!=='idle')?'inline-block':'none'; }
 
 // ── boot ──
 async function boot(){
   S.modules=await get('/api/modules');
-  $('#navcnt-catalog').textContent=(await get('/api/catalog')).length;
+  S.builtNames=new Set(S.modules.map(m=>m.name));
   window.addEventListener('hashchange',router);
   connectWS();
   router();
-  // aktif durum
   try{ const j=await get('/api/job'); if(j.status) updateStatusPill(j.status);}catch(e){}
 }
 boot();
