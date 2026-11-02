@@ -62,7 +62,8 @@ class Job:
     id: str
     request: ScanRequest
     status: str = "pending"
-    started_at: float = field(default_factory=time.time)
+    created_at: float = field(default_factory=time.time)
+    started_at: Optional[float] = None    # ilk başlatınca set edilir
     finished_at: Optional[float] = None
     run_dir: Optional[str] = None
     events: list[Event] = field(default_factory=list)
@@ -159,10 +160,26 @@ class JobManager:
             cfg.credentials = []
         return cfg
 
-    def start(self, req: ScanRequest) -> Job:
+    def save(self, req: ScanRequest) -> Job:
+        """Tarama tanımını kaydeder (Nessus gibi); henüz ÇALIŞTIRMAZ."""
+        # Kapsamı erkenden doğrula ki geçersizse hemen hata görülsün.
+        try:
+            ScopeGuard(self._build_config(req).scope)
+        except ScopeError as e:
+            raise HTTPException(400, f"geçersiz kapsam: {e}")
+        job = Job(id=uuid.uuid4().hex[:8], request=req, status="saved")
+        self.jobs.append(job)
+        return job
+
+    def launch(self, job_id: str) -> Job:
+        """Kaydedilmiş (veya tamamlanmış) bir taramayı başlatır/yeniden koşar."""
+        job = self.get(job_id)
+        if job is None:
+            raise HTTPException(404, "tarama bulunamadı")
         if self.running:
             raise HTTPException(409, "zaten çalışan bir tarama var")
 
+        req = job.request
         cfg = self._build_config(req)
         try:
             ScopeGuard(cfg.scope)
@@ -178,7 +195,13 @@ class JobManager:
 
         setup_logging(cfg.output_dir, verbose=False)
 
-        job = Job(id=uuid.uuid4().hex[:8], request=req)
+        # Yeniden koşuya hazırla (temiz durum)
+        job.events = []
+        job.module_status = {}
+        job.summary = {}
+        job.error = None
+        job.finished_at = None
+
         enabled = set(req.modules) if req.modules is not None else None
         plugins = set(req.plugins) if req.plugins is not None else None
 
@@ -194,6 +217,7 @@ class JobManager:
         job.run_dir = str(orch.run_dir)
 
         def worker():
+            job.started_at = time.time()
             job.status = "running"
             try:
                 job.summary = orch.run()
@@ -204,7 +228,6 @@ class JobManager:
             finally:
                 job.finished_at = time.time()
 
-        self.jobs.append(job)
         self._thread = threading.Thread(target=worker, daemon=True)
         self._thread.start()
         return job
@@ -274,9 +297,16 @@ def create_app(base_config_path: str | Path = "config.yaml") -> FastAPI:
         return {"include": [], "exclude": [], "mode": "safe", "has_credentials": False}
 
     # ── tarama kontrol ──
-    @app.post("/api/scan")
-    def scan(req: ScanRequest):
-        job = mgr.start(req)
+    @app.post("/api/scans")
+    def scan_save(req: ScanRequest):
+        """Tarama tanımını kaydet (çalıştırmadan)."""
+        job = mgr.save(req)
+        return {"job_id": job.id, "status": job.status}
+
+    @app.post("/api/scans/{job_id}/launch")
+    def scan_launch(job_id: str):
+        """Kaydedilmiş taramayı başlat."""
+        job = mgr.launch(job_id)
         return {"job_id": job.id, "run_dir": job.run_dir, "status": job.status}
 
     @app.post("/api/stop")

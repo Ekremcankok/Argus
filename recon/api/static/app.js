@@ -17,8 +17,9 @@ async function get(u){ const r=await fetch(u); if(!r.ok) throw new Error((await 
 async function post(u,b){ const r=await fetch(u,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b||{})});
   if(!r.ok) throw new Error((await r.json().catch(()=>({}))).detail||r.status); return r.json(); }
 const fmtTime = ts => ts? new Date(ts*1000).toLocaleString('tr-TR',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}) : '—';
+const ST_TR = {saved:'hazır',pending:'bekliyor',running:'çalışıyor',done:'bitti',failed:'hata',stopped:'durduruldu'};
 const sevBadge = s => `<span class="sev sev-${s}">${SEV_TR[s]||s}</span>`;
-const stBadge = s => `<span class="st st-${s}">${s}</span>`;
+const stBadge = s => `<span class="st st-${s}">${ST_TR[s]||s}</span>`;
 function miniBars(counts){ return `<span class="minibars">`+SEV.map(s=>{const n=counts[s]||0; if(!n)return '';
   const h=Math.min(18,6+n*2); return `<i class="bg-${s}" style="height:${h}px" title="${SEV_TR[s]}: ${n}"></i>`;}).join('')+`</span>`; }
 
@@ -46,14 +47,23 @@ async function viewScans(){
   $('#navcnt-scans').textContent=scans.length;
   if(!scans.length){ C().innerHTML=`<div class="card"><div class="empty">Henüz tarama yok.<br><br>
     <button class="primary" onclick="location.hash='#/new'">+ Yeni tarama oluştur</button></div></div>`; return; }
+  const actBtn=s=>{
+    if(s.status==='running') return `<button class="ibtn danger" onclick="event.stopPropagation();stopScan()" title="Durdur">■</button>`;
+    const label = s.status==='saved' ? '▶' : '⟳';
+    const tip = s.status==='saved' ? 'Başlat' : 'Yeniden çalıştır';
+    return `<button class="ibtn go" onclick="event.stopPropagation();launchScan('${s.id}')" title="${tip}">${label}</button>`;
+  };
   const rows=scans.map(s=>`<tr class="clk" onclick="location.hash='#/scans/${s.id}'">
     <td><b>${esc(s.name)}</b><div class="muted mono" style="font-size:12px">${esc((s.include||[]).join(', '))}</div></td>
     <td>${stBadge(s.status)}</td>
     <td>${s.credentialed?`<span class="chip">👤 ${esc(s.credential_principal||'kimlikli')}</span>`:'<span class="muted">anonim</span>'}</td>
     <td class="num">${s.hosts}</td><td class="num">${s.total}</td><td>${miniBars(s.severity_counts)}</td>
-    <td class="muted">${fmtTime(s.started_at)}</td></tr>`).join('');
-  C().innerHTML=`<div class="card" style="padding:4px 4px 0"><table>
-    <thead><tr><th>Tarama</th><th>Durum</th><th>Kimlik</th><th>Host</th><th>Bulgu</th><th>Önem</th><th>Başlangıç</th></tr></thead>
+    <td class="muted">${s.started_at?fmtTime(s.started_at):'—'}</td>
+    <td style="text-align:right">${actBtn(s)}</td></tr>`).join('');
+  C().innerHTML=`<div class="row" style="justify-content:flex-end;margin-bottom:14px">
+      <button class="primary" onclick="location.hash='#/new'">+ Yeni Tarama</button></div>
+    <div class="card tablecard"><table>
+    <thead><tr><th>Tarama</th><th>Durum</th><th>Kimlik</th><th>Host</th><th>Bulgu</th><th>Önem</th><th>Başlangıç</th><th></th></tr></thead>
     <tbody>${rows}</tbody></table></div>`;
 }
 
@@ -70,7 +80,11 @@ async function viewScanDetail(id){
         <div class="dh-sub">${credLine} · <span class="mono">${esc((d.include||[]).join(', '))}</span> · ${fmtTime(d.started_at)}${d.dry_run?' · <span class="chip">dry-run</span>':''}</div>
         ${d.description?`<div class="muted" style="margin-top:4px">${esc(d.description)}</div>`:''}
       </div>
-      <div>${d.status==='running'?`<button class="danger" onclick="stopScan()">■ Durdur</button>`:''}</div>
+      <div>${
+        d.status==='running' ? `<button class="danger" onclick="stopScan()">■ Durdur</button>`
+        : d.status==='saved' ? `<button class="primary" onclick="launchScan('${id}')">▶ Taramayı Başlat</button>`
+        : `<button onclick="launchScan('${id}')">⟳ Yeniden Çalıştır</button>`
+      }</div>
     </div>
     <div class="tabs">
       <span class="tab ${_sdTab==='findings'?'on':''}" onclick="sdTab('findings','${id}')">Bulgular <span class="tcount">${d.total}</span></span>
@@ -82,17 +96,24 @@ async function viewScanDetail(id){
 }
 window.sdTab=(t,id)=>{ _sdTab=t; viewScanDetail(id); };
 window.stopScan=async()=>{ await post('/api/stop'); };
+window.launchScan=async(id)=>{
+  try{ await post('/api/scans/'+id+'/launch'); _sdTab='progress'; location.hash='#/scans/'+id; router(); }
+  catch(e){ alert('Başlatılamadı: '+e.message); }
+};
 
 async function renderSdBody(id,d){
   const body=$('#sdbody'); if(!body)return;
   if(_sdTab==='findings'){
+    if(d.status==='saved'){ body.innerHTML=`<div class="card"><div class="empty">
+      Tarama henüz çalıştırılmadı.<br><br>
+      <button class="primary" onclick="launchScan('${id}')">▶ Taramayı Başlat</button></div></div>`; return; }
     const f=await get('/api/findings?job_id='+id);
     if(!f.length){ body.innerHTML=`<div class="card"><div class="empty">${d.status==='running'?'Taranıyor… bulgu bekleniyor.':'Bu taramada bulgu yok.'}</div></div>`; return; }
     const rows=f.map(x=>`<tr class="clk" onclick="location.hash='#/scans/${id}/f/${encodeURIComponent(x.id)}'">
       <td>${sevBadge(x.severity)}</td><td>${esc(x.title)}${x.manual_followup?' <span class="chip manual">MANUEL</span>':''}</td>
       <td class="mono">${esc(x.host)}</td><td class="mono">${x.port||''}</td>
       <td><span class="chip">${x.confidence}</span></td><td class="muted">${esc(x.source_tool||'')}</td></tr>`).join('');
-    body.innerHTML=`<div class="card" style="padding:4px 4px 0"><table>
+    body.innerHTML=`<div class="card tablecard"><table>
       <thead><tr><th>Önem</th><th>Başlık</th><th>Host</th><th>Port</th><th>Güven</th><th>Araç</th></tr></thead>
       <tbody>${rows}</tbody></table></div>`;
   } else if(_sdTab==='hosts'){
@@ -106,7 +127,7 @@ async function renderSdBody(id,d){
         <td class="num">${(h.ports||[]).length}</td>
         <td>${h.smb_signing===false?'<span class="chip manual">signing yok</span>':'<span class="muted">—</span>'}</td>
         <td class="num">${h.finding_count||0}</td></tr>`;}).join('');
-    body.innerHTML=`<div class="card" style="padding:4px 4px 0"><table>
+    body.innerHTML=`<div class="card tablecard"><table>
       <thead><tr><th>IP</th><th>Hostname</th><th>OS</th><th>Roller</th><th>Port</th><th>SMB</th><th>Bulgu</th></tr></thead>
       <tbody>${rows}</tbody></table></div>`;
   } else {
@@ -178,11 +199,11 @@ async function viewNew(){
       <div id="newbody" style="padding:20px"></div>
       <div class="form-foot">
         <button onclick="location.hash='#/scans'">İptal</button>
-        <button class="primary" id="startBtn">▶ Taramayı Başlat</button>
+        <button class="primary" id="saveBtn">💾 Tarama Kaydet</button>
       </div>
     </div>`;
   renderNewBody();
-  $('#startBtn').onclick=startScan;
+  $('#saveBtn').onclick=saveScan;
   updatePCount();
 }
 window.newTab=(t)=>{ saveSettings(); _newTab=t; renderNewBody(); };
@@ -218,15 +239,18 @@ function renderNewBody(){
         : 'Kimlik bilgisi olmadan — yalnız anonim/null erişim ve ağ seviyesi tespit.'}</div>
       <div class="${_cred?'':'disabled-block'}">
         <div class="row">
-          <div style="flex:1"><label class="fld">Domain</label>
-            <input id="cdom" type="text" placeholder="lab.local" value="${esc(c.dom||'')}" ${_cred?'':'disabled'}></div>
-          <div style="flex:1"><label class="fld">Kullanıcı adı</label>
-            <input id="cu" type="text" placeholder="lowpriv" value="${esc(c.user||'')}" ${_cred?'':'disabled'}></div>
+          <div style="flex:1;min-width:160px"><label class="fld">Domain</label>
+            <input id="cdom" type="text" autocomplete="off" placeholder="lab.local" value="${esc(c.dom||'')}" ${_cred?'':'disabled'}></div>
+          <div style="flex:1;min-width:160px"><label class="fld">Kullanıcı adı</label>
+            <input id="cu" type="text" autocomplete="off" placeholder="lowpriv" value="${esc(c.user||'')}" ${_cred?'':'disabled'}></div>
         </div>
         <label class="fld">Parola</label>
-        <input id="cpw" type="password" placeholder="••••••••" value="${esc(c.pw||'')}" ${_cred?'':'disabled'}>
+        <div class="pw-wrap">
+          <input id="cpw" type="password" autocomplete="new-password" placeholder="parola" value="${esc(c.pw||'')}" ${_cred?'':'disabled'}>
+          <span class="pw-toggle" id="pwtgl" onclick="togglePw()">göster</span>
+        </div>
         <label class="fld">— veya NTLM hash (pass-the-hash)</label>
-        <input id="chash" class="mono" type="text" placeholder="aad3b4...:31d6cf..." value="${esc(c.hash||'')}" ${_cred?'':'disabled'}>
+        <input id="chash" class="mono" type="text" autocomplete="off" placeholder="aad3b4...:31d6cf..." value="${esc(c.hash||'')}" ${_cred?'':'disabled'}>
       </div>`;
   } else {
     renderPlugins(body);
@@ -234,6 +258,8 @@ function renderNewBody(){
   updatePCount();
 }
 window.setCred=(v)=>{ saveSettings(); _cred=v; renderNewBody(); };
+window.togglePw=()=>{ const i=$('#cpw'); if(!i)return; i.type=i.type==='password'?'text':'password';
+  const t=$('#pwtgl'); if(t)t.textContent=i.type==='password'?'göster':'gizle'; };
 
 function renderPlugins(body){
   const byFam={}; S.catalog.forEach(e=>{(byFam[e.phase]=byFam[e.phase]||[]).push(e);});
@@ -272,7 +298,7 @@ function renderPlugins(body){
 }
 function updatePCount(){ const el=$('#pcount'); if(el&&_pluginSel) el.textContent=_pluginSel.size; }
 
-async function startScan(){
+async function saveScan(){
   saveSettings();
   const f=window._f||{}, c=window._c||{};
   const include=(f.inc||'').split('\n').map(s=>s.trim()).filter(Boolean);
@@ -284,8 +310,8 @@ async function startScan(){
   const body={name:f.nm||null, description:f.desc||null, include, exclude,
     modules, plugins:[..._pluginSel], dry_run:!!f.dry};
   if(_cred && c.user){ body.credential={domain:c.dom||null, username:c.user, password:c.pw||null, ntlm_hash:c.hash||null}; }
-  try{ await post('/api/scan',body); resetNew(); location.hash='#/scans'; }
-  catch(e){ alert('Hata: '+e.message); }
+  try{ await post('/api/scans',body); resetNew(); location.hash='#/scans'; }
+  catch(e){ alert('Kaydedilemedi: '+e.message); }
 }
 function resetNew(){ _newTab='settings'; _cred=false; _pluginSel=null; window._f=null; window._c=null; }
 
@@ -301,7 +327,8 @@ function connectWS(){
   ws.onclose=()=>setTimeout(connectWS,1500);
 }
 function updateStatusPill(s){ const p=$('#statuspill'); if(!p)return;
-  p.className='st st-'+(s||'idle'); p.textContent=s||'idle'; p.style.display=(s&&s!=='idle')?'inline-block':'none'; }
+  p.className='st st-running'; p.textContent='● tarama çalışıyor';
+  p.style.display=(s==='running')?'inline-block':'none'; }
 
 // ── boot ──
 async function boot(){
