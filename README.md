@@ -25,7 +25,15 @@ pip install -r requirements.txt
 Sarmalanan araçlar ayrı kurulur: `nmap`, `netexec`, `impacket`, `certipy-ad`,
 `enum4linux-ng`, `responder`, `bloodhound-ce` … (çoğu Kali'de hazır).
 
-## Kullanım
+## Web paneli
+> ⚠ **index.html'i çift tıklayıp açma** — bembeyaz sayfa gelir. Panel bir
+> sunucu uygulamasıdır (`/static` ve `/api` mutlak yolları + canlı backend).
+> Her zaman sunucuyu çalıştırıp tarayıcıda adrese git:
+```bash
+recon serve                 # http://127.0.0.1:8777  (yalnız localhost)
+```
+
+## Kullanım (CLI)
 ```bash
 cp config.example.yaml config.yaml      # scope + creds (env'den) düzenle
 export RECON_LOWPRIV_PW='Passw0rd1'      # parola düz metin DEĞİL, env'den

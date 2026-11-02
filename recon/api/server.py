@@ -218,6 +218,16 @@ def create_app(base_config_path: str | Path = "config.yaml") -> FastAPI:
     app = FastAPI(title="İç Ağ Recon Paneli")
     mgr = JobManager(Path(base_config_path))
 
+    @app.middleware("http")
+    async def _no_cache(request, call_next):
+        # Panel bir dev aracı; statik/HTML önbelleklenmesin ki değişiklikler
+        # anında görünsün (tarayıcı eski CSS/JS'e takılmasın).
+        resp = await call_next(request)
+        p = request.url.path
+        if p == "/" or p.startswith("/static"):
+            resp.headers["Cache-Control"] = "no-store, max-age=0"
+        return resp
+
     @app.get("/")
     def index():
         return FileResponse(_STATIC / "index.html")
