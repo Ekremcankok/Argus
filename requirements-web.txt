@@ -1,0 +1,4 @@
+# Web paneli bağımlılıkları (sadece `recon serve` için gerekli)
+-r requirements.txt
+fastapi>=0.110
+uvicorn[standard]>=0.29

@@ -125,7 +125,23 @@ def build_parser() -> argparse.ArgumentParser:
     ps.add_argument("--list", action="store_true", help="çözülen hedefleri yaz")
     ps.set_defaults(func=_cmd_scope)
 
+    pw = sub.add_parser("serve", help="web kontrol panelini başlat (localhost)")
+    pw.add_argument("-c", "--config", default="config.yaml")
+    pw.add_argument("--host", default="127.0.0.1")
+    pw.add_argument("--port", type=int, default=8777)
+    pw.add_argument("--allow-external", action="store_true",
+                    help="GÜVENLİK: paneli localhost dışına aç (dikkat!)")
+    pw.set_defaults(func=_cmd_serve)
+
     return p
+
+
+def _cmd_serve(args) -> int:
+    from .api.server import serve
+    print(f"Panel: http://{args.host}:{args.port}  (config: {args.config})")
+    serve(host=args.host, port=args.port, config=args.config,
+          allow_external=args.allow_external)
+    return 0
 
 
 def main(argv=None) -> int:
