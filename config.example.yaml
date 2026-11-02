@@ -1,0 +1,46 @@
+# İç Ağ Recon Orkestratörü — örnek yapılandırma
+# Gerçek kullanımda bunu config.yaml'e kopyala; config.yaml .gitignore'da (creds/scope içerir).
+#
+# Kimlik bilgileri DÜZ METİN DEĞİL: parola bir ortam değişkeni adıyla verilir (password_env).
+# Çalıştırmadan önce:  export RECON_LOWPRIV_PW='Passw0rd1'
+
+# ── Kapsam: testin yasal sınırı. include = dokunabileceğin ağlar, exclude HER ZAMAN kazanır.
+scope:
+  include:
+    - 192.168.1.0/24            # lab LAN
+  exclude:
+    - 192.168.1.1               # gateway
+    - 192.168.1.30              # saldırı/host makinesi (Wi-Fi)
+    # - 192.168.1.50/32         # örn. yazıcı / OT — asla dokunma
+
+# ── Çalışma modu: safe (varsayılan, yıkıcı/intrusive faz yok) | aggressive (opt-in)
+mode: safe
+
+# ── Çıktı kök dizini (ham çıktı + finding DB + loglar buraya)
+output_dir: ./output
+
+# ── Eşzamanlılık & hız freni (DoS/lockout riskini sınırlar)
+concurrency:
+  max_hosts: 16                 # aynı anda kaç hosta dokunulur
+  rate_limit_pps: null          # nmap --min-rate benzeri; null = araç varsayılanı
+
+# ── Lockout koruması: spray/auth denemesi yapan modüller bunu okur.
+#    threshold null ise → spray OTOMATİK ÇALIŞMAZ (operatör onayı şart).
+lockout:
+  threshold: null               # domain lockout eşiği (biliniyorsa int)
+  observation_window_min: null
+
+# ── Kimlik bilgileri (parola asla burada değil — env değişkeni adı)
+credentials:
+  - name: lowpriv
+    domain: lab.local
+    username: lowpriv
+    password_env: RECON_LOWPRIV_PW
+    # ntlm_hash_env: RECON_LOWPRIV_HASH   # alternatif: pass-the-hash için
+
+# ── Altyapı ipuçları (biliniyorsa; boşsa modüller keşiften çıkarır)
+dc: 192.168.1.10
+dns: 192.168.1.10
+
+# ── İzin verilen test saatleri (opsiyonel; dışında agresif fazlar çalışmaz)
+time_window: null               # örn: "09:00-18:00"

@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+env/
+
+# Araç çıktıları — ASLA commit edilmez (ham tarama çıktıları, hash/secret, finding DB)
+output/
+*.sqlite
+*.sqlite3
+*.db
+*.jsonl
+
+# Gerçek config (creds/scope içerir) — sadece .example commit edilir
+config.yaml
+config.local.yaml
+*.local.yaml
+
+# Loglar
+*.log
+logs/
+
+# Kimlik bilgisi / secret dosyaları
+secrets/
+*.secret
+*.kirbi
+*.ccache
+
+# OS / editör
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

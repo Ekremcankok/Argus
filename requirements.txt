@@ -1,0 +1,8 @@
+# Çekirdek bağımlılıklar (Kali: python3 -m pip install -r requirements.txt --break-system-packages
+# veya tercihen bir venv içinde)
+pydantic>=2.6,<3
+PyYAML>=6.0
+Jinja2>=3.1
+
+# İsteğe bağlı: creds'i keyring'den okumak için (yoksa env değişkeni kullanılır)
+# keyring>=24
