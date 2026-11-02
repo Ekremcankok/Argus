@@ -22,16 +22,20 @@ _DANGEROUS = {
     "AddMember", "AddAllowedToAct", "WriteSPN",
 }
 _DCSYNC = {"GetChanges", "GetChangesAll", "GetChangesInFilteredSet", "DCSync"}
-# Atlanacak varsayılan ayrıcalıklı principal SID son ekleri / well-known
-_SKIP_SID_SUFFIX = ("-512", "-519", "-518", "-516", "-520", "-498", "-500", "-502", "-544")
-_SKIP_SID_FULL = {"S-1-5-18", "S-1-5-32-544", "S-1-5-32-548", "S-1-5-32-549",
-                  "S-1-5-32-550", "S-1-5-9", "S-1-5-10", "S-1-3-0"}
+# Atlanacak varsayılan ayrıcalıklı principal'ler. BloodHound builtin SID'leri
+# "LAB.LOCAL-S-1-5-32-548" gibi verir → tam builtin SID'i son-ek olarak eşle.
+_PRIV_RIDS = ("-512", "-519", "-518", "-516", "-520", "-498", "-500", "-502")
+_BUILTIN_PRIV = ("S-1-5-32-544", "S-1-5-32-548", "S-1-5-32-549", "S-1-5-32-550",
+                 "S-1-5-32-551", "S-1-5-32-552")
+_WELLKNOWN = {"S-1-5-18", "S-1-5-9", "S-1-5-10", "S-1-3-0"}
 
 
 def _is_default_priv(sid: str) -> bool:
-    if sid in _SKIP_SID_FULL:
+    if not sid or sid in _WELLKNOWN:
         return True
-    return any(sid.endswith(suf) for suf in _SKIP_SID_SUFFIX)
+    if any(sid.endswith(b) for b in _BUILTIN_PRIV):   # Administrators/Account|Server|Print|Backup Ops
+        return True
+    return any(sid.endswith(r) for r in _PRIV_RIDS)   # Domain/Enterprise Admins vb.
 
 
 def bh_binary() -> Optional[str]:
@@ -87,17 +91,15 @@ def analyze_bloodhound(objs: dict[str, list[dict]]) -> dict:
                     result["dcsync"].append(name)
 
     # Tehlikeli ACE'ler + Shadow Credentials.
-    # Gürültü kesme: user/group/computer için yalnız YÜKSEK-DEĞER hedefteki
-    # (highvalue veya adminCount) ACE'ler; GPO/OU'da her yazma hakkı tehlikeli.
+    # Gürültü kesme: MİRAS (inherited) ACE'ler atlanır — onlar yapısal gürültü;
+    # doğrudan atanmış + varsayılan-olmayan principal = gerçek yetki yükseltme yolu.
     for otype in ("users", "groups", "computers", "gpos", "ous"):
         for o in objs.get(otype, []):
             props = o.get("Properties") or {}
             target = props.get("name") or o.get("ObjectIdentifier", "?")
-            if otype in ("users", "groups", "computers"):
-                high = bool(props.get("highvalue")) or props.get("admincount") in (True, 1, "1")
-                if not high:
-                    continue
             for ace in o.get("Aces", []) or []:
+                if ace.get("IsInherited"):
+                    continue
                 sid = ace.get("PrincipalSID", "")
                 rn = ace.get("RightName", "")
                 if _is_default_priv(sid):
