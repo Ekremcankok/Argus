@@ -13,8 +13,11 @@ from typing import Optional
 from ..catalog import get_entry, load_catalog
 from ..findings import Finding, Severity, Confidence, Exploitable
 from ..registry import register
-from ._tools import nxc_binary, nxc_auth, impacket_tool, certipy_bin
+from ._tools import nxc_binary, nxc_auth, impacket_tool, certipy_bin, summarize
 from .base import Module, ModuleContext
+
+# Ölçekte (1000-5000 kullanıcı) tek tür bulguyu bu sayıyla sınırla; kalanı özet
+_CAP = 40
 
 _RE_ASREP = re.compile(r"\$krb5asrep\$\d+\$([^@\s:]+)", re.I)
 _RE_ESC = re.compile(r"\bESC(\d{1,2})\b")
@@ -50,7 +53,8 @@ _RE_DELEG = re.compile(
 
 # Açıklamada parola işareti: anahtar kelime VEYA karma (büyük+küçük+rakam) token
 _CRED_KW = re.compile(r"\b(pass(word)?|pwd?|parola|[şs]ifre|secret|credential|creds?)\b", re.I)
-_CRED_TOKEN = re.compile(r"(?=\S*[A-Z])(?=\S*[a-z])(?=\S*\d)\S{6,}")
+# Karma token: büyük+küçük+rakam+ÖZEL karakter (ölçekte "Windows10" gibi benign'leri elemek için özel şart)
+_CRED_TOKEN = re.compile(r"(?=\S*[A-Z])(?=\S*[a-z])(?=\S*\d)(?=\S*[^\w\s])\S{6,}")
 
 
 def parse_delegation(output: str) -> list[tuple[str, str, str]]:
@@ -169,16 +173,26 @@ class ADModule(Module):
                              timeout=180, raw_path=out_dir / "kerberoast.txt")
         if res.skipped:
             return []
+        items = parse_kerberoast(res.stdout + res.stderr)
+        ev = str((out_dir / "kerberoast.txt").as_posix())
         out = []
-        for spn, acct in parse_kerberoast(res.stdout + res.stderr):
+        for spn, acct in items[:_CAP]:
             out.append(Finding(
                 host=dc, phase=self.name, category="vuln",
                 title=f"Kerberoastable SPN: {acct}",
                 severity=Severity.high, confidence=Confidence.detected,
                 exploitable=Exploitable.manual, manual_followup=True,
-                source_tool="impacket", kb_id="kerberoastable",
-                evidence_path=str((out_dir / "kerberoast.txt").as_posix()),
+                source_tool="impacket", kb_id="kerberoastable", evidence_path=ev,
                 notes=f"SPN={spn}. Hash offline kırılır (hashcat -m 13100)."))
+        if len(items) > _CAP:
+            extra = [a for _, a in items[_CAP:]]
+            out.append(Finding(
+                host=dc, phase=self.name, category="vuln",
+                title=f"+{len(extra)} Kerberoastable hesap daha",
+                severity=Severity.high, confidence=Confidence.detected,
+                exploitable=Exploitable.manual, manual_followup=True,
+                source_tool="impacket", kb_id="kerberoastable", evidence_path=ev,
+                notes="Diğer SPN hesapları: " + summarize(extra, 40)))
         return out
 
     def _asrep(self, ctx, dc, cred, out_dir):
@@ -193,16 +207,25 @@ class ADModule(Module):
                              timeout=180, raw_path=out_dir / "asrep.txt")
         if res.skipped:
             return []
+        users = parse_asrep(res.stdout + res.stderr)
+        ev = str((out_dir / "asrep.txt").as_posix())
         out = []
-        for user in parse_asrep(res.stdout + res.stderr):
+        for user in users[:_CAP]:
             out.append(Finding(
                 host=dc, phase=self.name, category="vuln",
                 title=f"AS-REP Roastable: {user}",
                 severity=Severity.high, confidence=Confidence.detected,
                 exploitable=Exploitable.manual, manual_followup=True,
-                source_tool="impacket", kb_id="asrep-roastable",
-                evidence_path=str((out_dir / "asrep.txt").as_posix()),
+                source_tool="impacket", kb_id="asrep-roastable", evidence_path=ev,
                 notes="Pre-auth kapalı. Hash offline kırılır (hashcat -m 18200)."))
+        if len(users) > _CAP:
+            out.append(Finding(
+                host=dc, phase=self.name, category="vuln",
+                title=f"+{len(users) - _CAP} AS-REP Roastable hesap daha",
+                severity=Severity.high, confidence=Confidence.detected,
+                exploitable=Exploitable.manual, manual_followup=True,
+                source_tool="impacket", kb_id="asrep-roastable", evidence_path=ev,
+                notes="Diğer hesaplar: " + summarize(users[_CAP:], 40)))
         return out
 
     def _gpp(self, ctx, dc, cred, out_dir):
@@ -354,8 +377,9 @@ class ADModule(Module):
         if res.skipped:
             return []
         ev = str((out_dir / "descriptions.txt").as_posix())
+        items = parse_descriptions(res.stdout + res.stderr)
         out = []
-        for user, desc in parse_descriptions(res.stdout + res.stderr):
+        for user, desc in items[:_CAP]:
             out.append(Finding(
                 host=dc, phase=self.name, category="cred",
                 title=f"LDAP description'da olası parola: {user}",
@@ -363,6 +387,14 @@ class ADModule(Module):
                 exploitable=Exploitable.manual, manual_followup=True,
                 source_tool="netexec", kb_id="description-password",
                 evidence_path=ev, notes=f"description: {desc}"))
+        if len(items) > _CAP:
+            out.append(Finding(
+                host=dc, phase=self.name, category="cred",
+                title=f"+{len(items) - _CAP} description'da olası parola daha",
+                severity=Severity.medium, confidence=Confidence.probable,
+                exploitable=Exploitable.manual, manual_followup=True,
+                source_tool="netexec", kb_id="description-password", evidence_path=ev,
+                notes="Diğer kullanıcılar: " + summarize([u for u, _ in items[_CAP:]], 40)))
         return out
 
     # ── LAPS okuma yetkisi (nxc -M laps) ──

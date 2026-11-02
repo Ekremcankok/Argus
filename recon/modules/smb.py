@@ -12,7 +12,7 @@ from typing import Optional
 
 from ..findings import Finding, Severity, Confidence, Exploitable
 from ..registry import register
-from ._tools import nxc_binary, nxc_auth
+from ._tools import nxc_binary, nxc_auth, summarize
 from .base import Module, ModuleContext
 
 _IP = r"(\d{1,3}(?:\.\d{1,3}){3})"
@@ -83,75 +83,70 @@ class SMBModule(Module):
         hosts = [h for h in ctx.inventory.hosts_with_port(445) if ctx.scope.is_allowed(h)]
         findings: list[Finding] = []
 
-        # 1) Banner: signing + SMBv1
+        # 1) Banner: signing + SMBv1 → inventory + KONSOLİDE özet (host başına değil)
+        signing_off, smbv1 = [], []
         if ctx.plugin_enabled("smb-signing-disabled") or ctx.plugin_enabled("smbv1-enabled"):
             res = ctx.runner.run([nxc, "smb", *hosts],
                                  timeout=180, raw_path=out_dir / "banner.txt")
+            ev = str((out_dir / "banner.txt").as_posix())
             if not res.skipped:
-                banner = parse_smb_banner(res.stdout + res.stderr)
-                for ip, info in banner.items():
+                for ip, info in parse_smb_banner(res.stdout + res.stderr).items():
                     if info["signing"] is False:
                         ctx.inventory.upsert_host(ip).smb_signing = False
-                        if ctx.plugin_enabled("smb-signing-disabled"):
-                            findings.append(Finding(
-                                host=ip, port=445, phase=self.name, category="config",
-                                title="SMB signing kapalı/zorunlu değil",
-                                severity=Severity.high, confidence=Confidence.detected,
-                                exploitable=Exploitable.manual, manual_followup=True,
-                                source_tool="netexec", kb_id="smb-signing-disabled",
-                                evidence_path=str((out_dir / "banner.txt").as_posix()),
-                                notes="NTLM relay hedefi (relay zinciri manuel)."))
+                        signing_off.append(ip)
                     elif info["signing"] is True:
                         ctx.inventory.upsert_host(ip).smb_signing = True
-                    if info["smbv1"] is True and ctx.plugin_enabled("smbv1-enabled"):
-                        findings.append(Finding(
-                            host=ip, port=445, phase=self.name, category="config",
-                            title="SMBv1 etkin", severity=Severity.high,
-                            confidence=Confidence.detected, exploitable=Exploitable.na,
-                            source_tool="netexec", kb_id="smbv1-enabled",
-                            evidence_path=str((out_dir / "banner.txt").as_posix()),
-                            notes="EternalBlue + downgrade yüzeyi."))
+                    if info["smbv1"] is True:
+                        smbv1.append(ip)
+            if signing_off and ctx.plugin_enabled("smb-signing-disabled"):
+                findings.append(self._summary(
+                    f"SMB signing kapalı: {len(signing_off)} host", Severity.high,
+                    "smb-signing-disabled", ev,
+                    "NTLM relay hedefleri (relay MANUEL): " + summarize(sorted(signing_off))))
+            if smbv1 and ctx.plugin_enabled("smbv1-enabled"):
+                findings.append(self._summary(
+                    f"SMBv1 etkin: {len(smbv1)} host", Severity.high, "smbv1-enabled", ev,
+                    "EternalBlue + downgrade yüzeyi: " + summarize(sorted(smbv1))))
 
-        # 2) Paylaşımlar — önce null, varsa kimlikli
+        # 2) Paylaşımlar — null + (varsa) kimlikli; KONSOLİDE
         if ctx.plugin_enabled("null-session") or ctx.plugin_enabled("writable-share"):
-            findings += self._shares(ctx, nxc, hosts, out_dir, cred=None)
+            null_hosts, writable = [], []
+            self._shares(ctx, nxc, hosts, out_dir, None, null_hosts, writable)
             cred = ctx.primary_credential()
             if cred is not None:
-                findings += self._shares(ctx, nxc, hosts, out_dir, cred=cred)
+                self._shares(ctx, nxc, hosts, out_dir, cred, null_hosts, writable)
+            if null_hosts and ctx.plugin_enabled("null-session"):
+                findings.append(self._summary(
+                    f"Null session (anonim SMB): {len(set(null_hosts))} host", Severity.medium,
+                    "null-session", str((out_dir / "shares_null.txt").as_posix()),
+                    "Anonim paylaşım erişimi: " + summarize(sorted(set(null_hosts)))))
+            if writable and ctx.plugin_enabled("writable-share"):
+                findings.append(self._summary(
+                    f"Yazılabilir SMB paylaşımı: {len(writable)} adet", Severity.high,
+                    "writable-share", str((out_dir / "shares_cred.txt").as_posix()),
+                    "Yazılabilir (host:share): " + summarize(writable)))
 
-        log.info("%d SMB bulgusu", len(findings))
+        log.info("%d SMB özet bulgusu", len(findings))
         ctx.progress(self.name, f"{len(findings)} bulgu")
         return findings
 
-    def _shares(self, ctx, nxc, hosts, out_dir, cred) -> list[Finding]:
+    def _summary(self, title, sev, kb, ev, notes) -> Finding:
+        return Finding(host="scope", port=445, phase=self.name, category="config",
+                       title=title, severity=sev, confidence=Confidence.detected,
+                       exploitable=Exploitable.manual, manual_followup=True,
+                       source_tool="netexec", kb_id=kb, evidence_path=ev, notes=notes)
+
+    def _shares(self, ctx, nxc, hosts, out_dir, cred, null_hosts, writable) -> None:
         tag = "cred" if cred else "null"
         res = ctx.runner.run([nxc, "smb", *hosts, *nxc_auth(cred), "--shares"],
                              timeout=240, raw_path=out_dir / f"shares_{tag}.txt")
         if res.skipped:
-            return []
-        shares = parse_shares(res.stdout + res.stderr)
-        findings = []
-        for ip, lst in shares.items():
+            return
+        for ip, lst in parse_shares(res.stdout + res.stderr).items():
             if not ctx.scope.is_allowed(ip):
                 continue
-            ev = str((out_dir / f"shares_{tag}.txt").as_posix())
-            if cred is None and ctx.plugin_enabled("null-session"):
-                names = ", ".join(s for s, _ in lst)
-                findings.append(Finding(
-                    host=ip, port=445, phase=self.name, category="config",
-                    title="Null session (anonim SMB paylaşım erişimi)",
-                    severity=Severity.medium, confidence=Confidence.detected,
-                    exploitable=Exploitable.na, source_tool="netexec",
-                    kb_id="null-session", evidence_path=ev,
-                    notes=f"Anonim erişilebilir: {names}"))
-            if ctx.plugin_enabled("writable-share"):
-                writ = [s for s, p in lst if "WRITE" in p]
-                if writ:
-                    findings.append(Finding(
-                        host=ip, port=445, phase=self.name, category="config",
-                        title="Yazılabilir SMB paylaşımı",
-                        severity=Severity.high, confidence=Confidence.detected,
-                        exploitable=Exploitable.manual, manual_followup=True,
-                        source_tool="netexec", kb_id="writable-share", evidence_path=ev,
-                        notes=f"Yazılabilir ({tag}): {', '.join(writ)}"))
-        return findings
+            if cred is None:
+                null_hosts.append(ip)
+            for s, p in lst:
+                if "WRITE" in p:
+                    writable.append(f"{ip}:{s}")

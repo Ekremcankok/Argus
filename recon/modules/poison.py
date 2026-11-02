@@ -13,8 +13,10 @@ from typing import Optional
 
 from ..findings import Finding, Severity, Confidence, Exploitable
 from ..registry import register
-from ._tools import nxc_binary, nxc_auth
+from ._tools import nxc_binary, nxc_auth, summarize
 from .base import Module, ModuleContext
+
+_CAP = 30  # ölçekte tek tek yazılacak WebDAV host sayısı; kalanı özet
 
 _IP = re.compile(r"(\d{1,3}(?:\.\d{1,3}){3})")
 
@@ -66,17 +68,26 @@ class PoisonModule(Module):
             res = ctx.runner.run([nxc, "smb", *hosts, *nxc_auth(cred), "-M", "webdav"],
                                  timeout=180, raw_path=out_dir / "webdav.txt")
             if not res.skipped:
-                for ip in parse_webdav(res.stdout + res.stderr):
-                    if not ctx.scope.is_allowed(ip):
-                        continue
+                wd = [ip for ip in parse_webdav(res.stdout + res.stderr)
+                      if ctx.scope.is_allowed(ip)]
+                ev = str((out_dir / "webdav.txt").as_posix())
+                for ip in wd[:_CAP]:
                     findings.append(Finding(
                         host=ip, port=445, phase=self.name, category="config",
                         title="WebClient (WebDAV) etkin",
                         severity=Severity.medium, confidence=Confidence.detected,
                         exploitable=Exploitable.manual, manual_followup=True,
                         source_tool="netexec", kb_id="webdav-enabled",
-                        evidence_path=str((out_dir / "webdav.txt").as_posix()),
+                        evidence_path=ev,
                         notes="HTTP coercion → relay yüzeyi (relay MANUEL)."))
+                if len(wd) > _CAP:
+                    findings.append(Finding(
+                        host="scope", port=445, phase=self.name, category="config",
+                        title=f"+{len(wd) - _CAP} hostta daha WebDAV etkin",
+                        severity=Severity.medium, confidence=Confidence.detected,
+                        exploitable=Exploitable.manual, manual_followup=True,
+                        source_tool="netexec", kb_id="webdav-enabled", evidence_path=ev,
+                        notes=summarize(wd[_CAP:], 40)))
 
         # 2) Relay hedef konsolidasyonu (signing=false; smb modülünden)
         relay = [h for h in ctx.inventory.relay_targets() if ctx.scope.is_allowed(h)]

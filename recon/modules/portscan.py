@@ -54,23 +54,27 @@ class PortScanModule(Module):
             log.warning("canlı host yok — önce discovery çalışmalı")
             return []
 
-        findings: list[Finding] = []
         max_workers = min(ctx.config.concurrency.max_hosts, max(1, len(hosts)))
         ctx.progress(self.name, f"{len(hosts)} host, {max_workers} paralel")
 
+        # Host başına yalnız inventory doldurulur (bulgu üretilmez — ölçekte flood olmasın)
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
             futures = {pool.submit(self._scan_host, ctx, ip, out_dir): ip
                        for ip in hosts}
             for fut in concurrent.futures.as_completed(futures):
                 ip = futures[fut]
                 try:
-                    findings.extend(fut.result())
+                    fut.result()
                 except Exception as e:  # tek host hatası diğerlerini durdurmasın
                     log.error("port tarama hatası %s: %s", ip, e)
-        ctx.progress(self.name, f"tamam ({len(findings)} kayıt)")
+
+        # Servis envanteri rapor/host-detayında zaten var; burada yalnız KONSOLİDE
+        # özet bulgular (host başına değil, servis tipine göre tek kayıt).
+        findings = self._summaries(ctx, out_dir)
+        ctx.progress(self.name, f"tamam ({len(findings)} özet)")
         return findings
 
-    def _scan_host(self, ctx: ModuleContext, ip: str, out_dir: Path) -> list[Finding]:
+    def _scan_host(self, ctx: ModuleContext, ip: str, out_dir: Path) -> None:
         ctx.scope.assert_allowed(ip)  # belt-and-suspenders
         xml_path = out_dir / f"{ip}.xml"
         cmd = ["nmap", "-sV", "-sC", "-n", "--top-ports", "1000",
@@ -78,56 +82,61 @@ class PortScanModule(Module):
         if ctx.config.concurrency.rate_limit_pps:
             cmd += ["--min-rate", str(ctx.config.concurrency.rate_limit_pps)]
         res = ctx.runner.run(cmd, timeout=600, raw_path=out_dir / f"{ip}.txt")
-        if res.skipped:
-            return []
-        return self._parse(xml_path, ctx, ip, out_dir)
+        if not res.skipped:
+            self._parse(xml_path, ctx, ip)
 
-    def _parse(self, xml_path, ctx: ModuleContext, ip: str, out_dir: Path) -> list[Finding]:
+    def _parse(self, xml_path, ctx: ModuleContext, ip: str) -> None:
         if not Path(xml_path).exists():
-            return []
+            return
         try:
             root = ET.parse(xml_path).getroot()
         except ET.ParseError:
-            return []
-
-        findings: list[Finding] = []
+            return
         host_el = root.find("host")
         if host_el is None:
-            return []
-
-        # OS tahmini (varsa)
+            return
         h = ctx.inventory.upsert_host(ip)
         osm = host_el.find("os/osmatch")
         if osm is not None:
             h.os = osm.get("name")
-
         for port_el in host_el.findall("ports/port"):
             state = port_el.find("state")
             if state is None or state.get("state") != "open":
                 continue
             portid = int(port_el.get("portid"))
-            proto = port_el.get("protocol", "tcp")
             svc_el = port_el.find("service")
-            svc = Service(
-                port=portid, proto=proto,
+            ctx.inventory.add_service(ip, Service(
+                port=portid, proto=port_el.get("protocol", "tcp"),
                 name=svc_el.get("name", "") if svc_el is not None else "",
                 product=svc_el.get("product", "") if svc_el is not None else "",
                 version=svc_el.get("version", "") if svc_el is not None else "",
-            )
-            ctx.inventory.add_service(ip, svc)
-
+            ))
             role = _ROLE_PORTS.get(portid)
             if role:
                 ctx.inventory.add_role(ip, role)
 
-            if portid in _NOTABLE:
-                title, sev, kb = _NOTABLE[portid]
-                findings.append(Finding(
-                    host=ip, port=portid, title=title, phase=self.name,
-                    category="service", severity=sev,
-                    confidence=Confidence.detected, exploitable=Exploitable.na,
-                    evidence_path=str((out_dir / f"{ip}.txt").as_posix()),
-                    source_tool="nmap", kb_id=kb,
-                    notes=f"{svc.name} {svc.product} {svc.version}".strip(),
-                ))
+    def _summaries(self, ctx: ModuleContext, out_dir: Path) -> list[Finding]:
+        from ._tools import summarize
+        findings = []
+        ev = str(out_dir.as_posix())
+        # (port, başlık-tekil, başlık-çoğul, severity, kb)
+        specs = [
+            (88, "Domain Controller adayı", "Domain Controller adayı",
+             Severity.info, "dc-detected", True),
+            (445, "SMB erişilebilir", "SMB erişilebilir", Severity.info, "smb-exposed", False),
+            (3389, "RDP erişilebilir", "RDP erişilebilir", Severity.low, "rdp-exposed", False),
+            (1433, "MSSQL erişilebilir", "MSSQL erişilebilir", Severity.low, "mssql-exposed", False),
+        ]
+        for port, _t, label, sev, kb, is_dc in specs:
+            hosts = (ctx.inventory.dc_candidates() if is_dc
+                     else ctx.inventory.hosts_with_port(port))
+            hosts = sorted(h for h in hosts if ctx.scope.is_allowed(h))
+            if not hosts:
+                continue
+            findings.append(Finding(
+                host="scope", phase=self.name, category="service", severity=sev,
+                title=f"{label}: {len(hosts)} host" + ("" if is_dc else f" ({port})"),
+                confidence=Confidence.detected, exploitable=Exploitable.na,
+                source_tool="nmap", kb_id=kb, evidence_path=ev,
+                notes=summarize(hosts)))
         return findings

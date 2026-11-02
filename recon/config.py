@@ -108,6 +108,17 @@ class Config(BaseModel):
     dc: Optional[str] = None
     dns: Optional[str] = None
     time_window: Optional[str] = None
+    # BloodHound toplama yöntemi: DCOnly (varsayılan, yalnız LDAP — host'a dokunmaz)
+    # veya All (session/local-admin/CanRDP için her host'a SMB; ölçekte yavaş/gürültülü, opt-in)
+    bloodhound_collect: str = "DCOnly"
+
+    @field_validator("bloodhound_collect")
+    @classmethod
+    def _valid_bh(cls, v: str) -> str:
+        allowed = {"DCOnly", "All", "DConly", "Session", "Group", "LocalAdmin", "ACL"}
+        if v not in allowed:
+            raise ValueError(f"bloodhound_collect geçersiz: {v} (DCOnly|All)")
+        return "DCOnly" if v == "DConly" else v
 
     @field_validator("dc", "dns")
     @classmethod

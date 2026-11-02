@@ -13,8 +13,10 @@ from typing import Optional
 
 from ..findings import Finding, Severity, Confidence, Exploitable
 from ..registry import register
-from ._tools import which_any
+from ._tools import which_any, summarize
 from .base import Module, ModuleContext
+
+_ACL_CAP = 30  # rapora tek tek yazılacak ACL sayısı; kalanı özet (ölçek)
 
 _DANGEROUS = {
     "GenericAll", "GenericWrite", "WriteDacl", "WriteOwner", "Owns", "Owner",
@@ -117,8 +119,8 @@ def analyze_bloodhound(objs: dict[str, list[dict]]) -> dict:
                     if key not in seen_acl:
                         seen_acl.add(key)
                         result["acls"].append((principal, rn, target))
-    # Gürültü sınırı
-    result["acls"] = result["acls"][:60]
+    # Ham sınır (özet için yeterli; rapora yazım _ACL_CAP ile ayrıca sınırlanır)
+    result["acls"] = result["acls"][:200]
     return result
 
 
@@ -254,9 +256,12 @@ class BloodHoundModule(Module):
                                         else ["-p", val])
         domain = cred.domain or ""
         prefix = str((out_dir / "bh").as_posix())
-        cmd = [bh, "-c", "DCOnly", *auth, "-d", domain, "-ns", dc,
+        collect = getattr(ctx.config, "bloodhound_collect", "DCOnly")
+        # All = her host'a dokunur (ölçekte yavaş); timeout'u buna göre uzat
+        timeout = 900 if collect == "All" else 300
+        cmd = [bh, "-c", collect, *auth, "-d", domain, "-ns", dc,
                "--dns-tcp", "-op", prefix]
-        res = ctx.runner.run(cmd, timeout=300, raw_path=out_dir / "collect.txt")
+        res = ctx.runner.run(cmd, timeout=timeout, raw_path=out_dir / "collect.txt")
         if res.skipped:
             return []
 
@@ -272,11 +277,12 @@ class BloodHoundModule(Module):
         n = sum(len(v) for v in objs.values())
         findings.append(Finding(
             host=dc, phase=self.name, category="info",
-            title="BloodHound verisi toplandı",
+            title=f"BloodHound verisi toplandı ({collect}, {n} nesne)",
             severity=Severity.info, confidence=Confidence.detected,
             exploitable=Exploitable.na, source_tool="bloodhound-python",
             kb_id=None, evidence_path=str((out_dir).as_posix()),
-            notes=f"{n} nesne. Saldırı yolu analizi MANUEL (BloodHound arayüzü)."))
+            notes=(f"JSON: {out_dir.as_posix()} — BloodHound GUI'ye import edip "
+                   "saldırı yollarını MANUEL incele. Aşağıdaki bulgular öne çıkanlar.")))
 
         if ctx.plugin_enabled("dcsync-rights"):
             for name in analysis["dcsync"]:
@@ -290,7 +296,8 @@ class BloodHoundModule(Module):
                     notes="Replikasyon hakkı → tüm hash'ler (secretsdump MANUEL)."))
 
         if ctx.plugin_enabled("acl-abuse"):
-            for principal, right, target in analysis["acls"]:
+            acls = analysis["acls"]
+            for principal, right, target in acls[:_ACL_CAP]:
                 findings.append(Finding(
                     host=dc, phase=self.name, category="config",
                     title=f"Tehlikeli ACL: {principal} --{right}--> {target}",
@@ -299,6 +306,15 @@ class BloodHoundModule(Module):
                     source_tool="bloodhound-python", kb_id="acl-abuse",
                     evidence_path=ev,
                     notes=f"{principal} nesnesi {target} üzerinde {right} (yetki yükseltme yolu)."))
+            if len(acls) > _ACL_CAP:
+                extra = [f"{p}--{r}-->{t}" for p, r, t in acls[_ACL_CAP:]]
+                findings.append(Finding(
+                    host=dc, phase=self.name, category="config",
+                    title=f"+{len(extra)} tehlikeli ACL daha (BloodHound'da incele)",
+                    severity=Severity.high, confidence=Confidence.detected,
+                    exploitable=Exploitable.manual, manual_followup=True,
+                    source_tool="bloodhound-python", kb_id="acl-abuse", evidence_path=ev,
+                    notes=summarize(extra, 30)))
 
         if ctx.plugin_enabled("shadow-credentials"):
             for principal, target in analysis["shadow"]:
