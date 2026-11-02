@@ -1103,3 +1103,26 @@ adcs-esc16:
   remediation: "CA'da security extension devre dışı bırakmayı kaldırın; güçlü binding."
   references:
     - "https://github.com/ly4k/Certipy/wiki"
+
+adcs-esc17:
+  title: "ADCS ESC17 (Server Auth + SAN → iç hostname TLS sertifikası)"
+  severity: high
+  category: vuln
+  phase: ad
+  manual_only: true
+  tags: [adcs, relay, mitm]
+  summary: "Server Authentication EKU + enrollee-supplied SAN → herhangi bir iç hostname için geçerli TLS sertifikası."
+  description: >
+    Server Authentication EKU'lu ve SAN'ı kullanıcının belirleyebildiği bir şablon,
+    düşük yetkili bir kullanıcının WSUS/iç sunucu gibi herhangi bir hostname için
+    geçerli TLS sertifikası almasına izin verir; bu sertifikayla HTTPS koruması
+    aşılıp MITM (ör. WSUS üzerinden kod dağıtımı) yapılabilir. (Digitrace: A. Neff & P. Knüfer)
+  exploitation: >
+    MANUEL — certipy req ile hedef hostname (SAN) için sertifika alınır; HTTPS/WSUS
+    MITM operatör kararı ve koordinasyonuyla.
+  remediation: >
+    Server Auth şablonlarında 'enrollee supplies subject'i kapatın; SAN'ı kısıtlayın;
+    manager approval ekleyin; WSUS'u HTTPS + imza doğrulamayla sıkılaştırın.
+  references:
+    - "https://mustafanafizdurukan.github.io/posts/esc17-wsus-dns-abuse"
+    - "https://github.com/ly4k/Certipy/wiki"

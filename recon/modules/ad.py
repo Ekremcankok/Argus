@@ -10,7 +10,7 @@ import re
 from pathlib import Path
 from typing import Optional
 
-from ..catalog import get_entry
+from ..catalog import get_entry, load_catalog
 from ..findings import Finding, Severity, Confidence, Exploitable
 from ..registry import register
 from ._tools import nxc_binary, nxc_auth, impacket_tool, certipy_bin
@@ -65,9 +65,11 @@ class ADModule(Module):
     intrusive = False
     default_enabled = True
 
+    # ADCS ESC plugin'leri katalogdan dinamik (certipy yeni ESC ekledikçe genişler)
+    ESC_KBS = {k for k in load_catalog() if k.startswith("adcs-esc")}
     PLUGINS = {"kerberoastable", "asrep-roastable", "gpp-cpassword",
                "machineaccountquota", "weak-password-policy", "description-password",
-               "unconstrained-delegation"} | {f"adcs-esc{n}" for n in range(1, 17)}
+               "unconstrained-delegation"} | ESC_KBS
 
     def requires(self, ctx: ModuleContext) -> Optional[str]:
         if not ctx.inventory.dc_candidates():
@@ -227,8 +229,7 @@ class ADModule(Module):
 
     def _adcs(self, ctx, dc, cred, out_dir):
         # Herhangi bir ESC plugin'i seçiliyse ADCS taraması çalışır
-        if ctx.plugins is not None and not any(
-                ctx.plugin_enabled(f"adcs-esc{n}") for n in range(1, 17)):
+        if ctx.plugins is not None and not (self.ESC_KBS & ctx.plugins):
             return []
         cb = certipy_bin()
         if not cb:
