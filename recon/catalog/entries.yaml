@@ -874,3 +874,232 @@ weak-tls:
   remediation: "TLS1.2+ zorunlu, güçlü şifre takımları, geçerli CA sertifikaları."
   references:
     - "https://github.com/drwetter/testssl.sh"
+
+# ─────────────────────────────────────────────────────────────
+# ADCS ESC2–ESC16 (certipy find -vulnerable ile tespit; sömürü MANUEL)
+# ─────────────────────────────────────────────────────────────
+adcs-esc2:
+  title: "ADCS ESC2 (Any Purpose / EKU yok şablon)"
+  severity: critical
+  category: vuln
+  phase: ad
+  manual_only: true
+  tags: [adcs, privesc]
+  summary: "Any Purpose EKU veya EKU'suz şablon → her amaçla kullanılabilir sertifika."
+  description: >
+    Şablonun EKU'su 'Any Purpose' veya hiç EKU yok; düşük yetkili enroll hakkıyla
+    alınan sertifika kimlik doğrulama dahil her amaçla kullanılabilir.
+  exploitation: "MANUEL — certipy req ile sertifika alınır, PKINIT/kimlik için kullanılır."
+  remediation: "EKU'yu daraltın; enroll yetkisini ve 'supplies subject'i kısıtlayın."
+  references:
+    - "https://posts.specterops.io/certified-pre-owned-d95910965cd2"
+
+adcs-esc3:
+  title: "ADCS ESC3 (Enrollment Agent şablonu)"
+  severity: critical
+  category: vuln
+  phase: ad
+  manual_only: true
+  tags: [adcs, privesc]
+  summary: "Certificate Request Agent EKU → başkası adına sertifika talebi."
+  description: >
+    Enrollment Agent (Certificate Request Agent EKU) şablonuna erişim, saldırganın
+    başka kullanıcılar adına (ör. Domain Admin) sertifika talep etmesine izin verir.
+  exploitation: "MANUEL — certipy req -on-behalf-of ile hedef kullanıcı sertifikası."
+  remediation: "Enrollment Agent şablonlarını ve enroll haklarını kısıtlayın; manager approval."
+  references:
+    - "https://posts.specterops.io/certified-pre-owned-d95910965cd2"
+
+adcs-esc4:
+  title: "ADCS ESC4 (şablon üzerinde yazma/ACL)"
+  severity: critical
+  category: vuln
+  phase: ad
+  manual_only: true
+  tags: [adcs, acl, privesc]
+  summary: "Şablon üzerinde Write/GenericAll → şablonu ESC1'e çevir."
+  description: >
+    Düşük yetkili principal bir sertifika şablonu üzerinde yazma hakkına sahip;
+    şablonu 'enrollee supplies subject' + client auth olacak şekilde değiştirip
+    (ESC1) domain yetki yükseltir.
+  exploitation: "MANUEL — certipy template ile şablonu zafiyetli yap, sonra ESC1 zinciri."
+  remediation: "Şablon ACL'lerini sıkılaştırın (yalnız yetkili yöneticiler Write)."
+  references:
+    - "https://posts.specterops.io/certified-pre-owned-d95910965cd2"
+
+adcs-esc5:
+  title: "ADCS ESC5 (PKI nesne ACL'i)"
+  severity: high
+  category: vuln
+  phase: ad
+  manual_only: true
+  tags: [adcs, acl]
+  summary: "CA sunucu/PKI AD nesneleri üzerinde zayıf ACL → CA ele geçirme."
+  description: >
+    CA bilgisayar hesabı veya PKI ile ilgili AD nesneleri (Enrollment Services,
+    NtAuthCertificates) üzerindeki aşırı haklar CA'yı veya güveni ele geçirmeye yol açar.
+  exploitation: "MANUEL — ACL suistimali ile CA/PKI nesnesi ele geçirilir."
+  remediation: "PKI AD nesnelerinin sahiplik/ACL'lerini Tier-0'a kısıtlayın."
+  references:
+    - "https://posts.specterops.io/certified-pre-owned-d95910965cd2"
+
+adcs-esc6:
+  title: "ADCS ESC6 (EDITF_ATTRIBUTESUBJECTALTNAME2)"
+  severity: critical
+  category: vuln
+  phase: ad
+  manual_only: true
+  tags: [adcs, privesc]
+  summary: "CA bayrağı SAN'ı her talepte serbest bırakır → herhangi biri olarak sertifika."
+  description: >
+    CA'da EDITF_ATTRIBUTESUBJECTALTNAME2 etkin; herhangi bir şablonla yapılan talepte
+    saldırgan SAN'a istediği UPN'i (ör. Administrator) ekleyip o kullanıcı olur.
+  exploitation: "MANUEL — certipy req -upn administrator ile; CA bayrağı aktifken."
+  remediation: "CA'da EDITF_ATTRIBUTESUBJECTALTNAME2 bayrağını kaldırıp CA'yı yeniden başlatın."
+  references:
+    - "https://posts.specterops.io/certified-pre-owned-d95910965cd2"
+
+adcs-esc7:
+  title: "ADCS ESC7 (CA yönetim hakkı — ManageCA/ManageCertificates)"
+  severity: high
+  category: vuln
+  phase: ad
+  manual_only: true
+  tags: [adcs, privesc]
+  summary: "CA üzerinde yönetim hakkı → SAN'ı aç veya talepleri onayla."
+  description: >
+    ManageCA/ManageCertificates hakkı olan principal, CA'da ESC6 bayrağını açabilir
+    veya bekleyen sertifika taleplerini onaylayarak yetki yükseltir.
+  exploitation: "MANUEL — certipy ca ile flag değiştir / talep onayla."
+  remediation: "CA yönetim rollerini (ManageCA/ManageCertificates) sıkı kısıtlayın."
+  references:
+    - "https://posts.specterops.io/certified-pre-owned-d95910965cd2"
+
+adcs-esc9:
+  title: "ADCS ESC9 (szOID_NTDS_CA_SECURITY_EXT yok)"
+  severity: high
+  category: vuln
+  phase: ad
+  manual_only: true
+  tags: [adcs, privesc]
+  summary: "Güvenlik uzantısı yok + zayıf eşleme → kimlik taklidi."
+  description: >
+    Şablonda security extension (SID bağlama) yoksa ve hesap eşlemesi zayıfsa,
+    altUPN manipülasyonuyla başka kullanıcı taklit edilebilir.
+  exploitation: "MANUEL — certipy ile UPN değiştirip hedef kullanıcı sertifikası alınır."
+  remediation: "StrongCertificateBindingEnforcement=2; security extension zorunlu."
+  references:
+    - "https://github.com/ly4k/Certipy/wiki"
+
+adcs-esc10:
+  title: "ADCS ESC10 (zayıf sertifika eşlemeleri)"
+  severity: high
+  category: vuln
+  phase: ad
+  manual_only: true
+  tags: [adcs, privesc]
+  summary: "CertificateMappingMethods / zayıf binding → kimlik taklidi."
+  description: >
+    DC'de zayıf sertifika eşleme ayarları (CertificateMappingMethods=0x4 veya
+    StrongCertificateBindingEnforcement=0) UPN tabanlı taklide izin verir.
+  exploitation: "MANUEL — Shadow Credentials/UPN ile hedef kullanıcı kimliği."
+  remediation: "Güçlü binding (SID) zorunlu; zayıf eşleme registry ayarlarını düzeltin."
+  references:
+    - "https://github.com/ly4k/Certipy/wiki"
+
+adcs-esc11:
+  title: "ADCS ESC11 (ICPR'a NTLM relay)"
+  severity: high
+  category: vuln
+  phase: ad
+  manual_only: true
+  tags: [adcs, relay]
+  summary: "RPC enrollment'ta şifreleme zorunlu değil → NTLM relay."
+  description: >
+    CA'da IF_ENFORCEENCRYPTICERTREQUEST ayarlı değilse, RPC (ICPR) enrollment'a
+    coercion ile yakalanan NTLM relay edilerek sertifika alınabilir.
+  exploitation: "MANUEL (yarı) — coercion + ntlmrelayx ICPR; relay zinciri operatör kontrolünde."
+  remediation: "RPC enrollment'ta şifrelemeyi zorunlu kılın; EPA; gereksiz enrollment kapat."
+  references:
+    - "https://github.com/ly4k/Certipy/wiki"
+
+adcs-esc12:
+  title: "ADCS ESC12 (CA anahtarı YubiHSM / shell erişimi)"
+  severity: high
+  category: vuln
+  phase: ad
+  manual_only: true
+  tags: [adcs]
+  summary: "CA özel anahtarına shell/HSM erişimi → sertifika üretimi."
+  description: >
+    CA sunucusuna shell erişimi ve YubiHSM üzerindeki anahtarın kullanılabilmesi,
+    saldırganın keyfi sertifika (hatta Golden Certificate) üretmesine yol açar.
+  exploitation: "MANUEL — CA host erişimi + anahtar kullanımı; yüksek etki."
+  remediation: "CA host erişimini Tier-0 ile sınırlayın; HSM PIN/erişim kontrolü."
+  references:
+    - "https://github.com/ly4k/Certipy/wiki"
+
+adcs-esc13:
+  title: "ADCS ESC13 (OID grup bağlı issuance policy)"
+  severity: high
+  category: vuln
+  phase: ad
+  manual_only: true
+  tags: [adcs, privesc]
+  summary: "Issuance policy bir gruba bağlı → sertifika grup üyeliği kazandırır."
+  description: >
+    Enroll edilebilen bir şablonun issuance policy'si ayrıcalıklı bir gruba (OID
+    group link) bağlıysa, alınan sertifika o grubun üyeliğini sağlar.
+  exploitation: "MANUEL — certipy ile şablonu enroll et, sertifikayla ayrıcalık kazan."
+  remediation: "Issuance policy–grup bağlarını denetleyin; gereksizleri kaldırın."
+  references:
+    - "https://posts.specterops.io/adcs-esc13-abuse-technique-fda4272fbd53"
+
+adcs-esc14:
+  title: "ADCS ESC14 (zayıf explicit sertifika eşlemesi)"
+  severity: high
+  category: vuln
+  phase: ad
+  manual_only: true
+  tags: [adcs, acl, privesc]
+  summary: "altSecurityIdentities üzerinde yazma → hedef hesaba sertifika eşle."
+  description: >
+    Hedef hesabın altSecurityIdentities özelliğine yazabilen principal, kendi
+    sertifikasını o hesaba eşleyerek kimliğini taklit eder.
+  exploitation: "MANUEL — altSecurityIdentities'e explicit mapping yaz, PKINIT ile taklit."
+  remediation: "altSecurityIdentities yazma ACL'lerini kısıtlayın; güçlü eşleme."
+  references:
+    - "https://github.com/ly4k/Certipy/wiki"
+
+adcs-esc15:
+  title: "ADCS ESC15 (EKUwu — Application Policies, CVE-2024-49019)"
+  severity: critical
+  category: vuln
+  cve: [CVE-2024-49019]
+  phase: ad
+  manual_only: true
+  tags: [adcs, privesc]
+  summary: "V1 şablonlarda keyfi application policy enjekte → client auth sertifikası."
+  description: >
+    Schema V1 şablonlarda 'enrollee supplies subject' ile talepte keyfi application
+    policy (ör. Client Authentication) enjekte edilerek kimlik doğrulayan sertifika alınır.
+  exploitation: "MANUEL — certipy req ile application policy enjekte ederek sertifika."
+  remediation: "KB5049983+ yamalarını uygulayın; V1 şablonları sıkılaştırın/kaldırın."
+  references:
+    - "https://msrc.microsoft.com/update-guide/vulnerability/CVE-2024-49019"
+
+adcs-esc16:
+  title: "ADCS ESC16 (CA genelinde güvenlik uzantısı kapalı)"
+  severity: high
+  category: vuln
+  phase: ad
+  manual_only: true
+  tags: [adcs, privesc]
+  summary: "CA tüm sertifikalarda SID security extension'ı atlar → ESC9 benzeri."
+  description: >
+    CA, szOID_NTDS_CA_SECURITY_EXT'i devre dışı listesine aldığından tüm
+    sertifikalarda SID bağlama yok; zayıf eşlemeyle domain genelinde taklit mümkün.
+  exploitation: "MANUEL — UPN manipülasyonu + zayıf eşleme ile hedef kullanıcı."
+  remediation: "CA'da security extension devre dışı bırakmayı kaldırın; güçlü binding."
+  references:
+    - "https://github.com/ly4k/Certipy/wiki"

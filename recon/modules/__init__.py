@@ -12,6 +12,8 @@ _BUILTIN = [
     "recon.modules.discovery",
     "recon.modules.portscan",
     "recon.modules.quickcve",
+    "recon.modules.smb",
+    "recon.modules.ad",
 ]
 
 
