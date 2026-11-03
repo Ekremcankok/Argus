@@ -160,6 +160,24 @@ def _build_graph(objs: dict[str, list[dict]]) -> dict[str, list[tuple[str, str]]
         for sid, rights in per.items():
             if "DCSync" in rights or {"GetChanges", "GetChangesAll"} <= rights:
                 add(sid, d.get("ObjectIdentifier"), "DCSync")
+
+    # Yanal hareket kenarları (yalnız -c All verisinde dolu; yoksa sessiz geçer):
+    # principal --AdminTo/CanRDP/...--> computer (bilgisayarı ele geçirme),
+    # computer --HasSession--> user (oturumdan kimlik çalma), RBCD.
+    def _results(o, key):
+        v = o.get(key)
+        return v.get("Results") if isinstance(v, dict) else (v or [])
+    for c in objs.get("computers", []):
+        csid = c.get("ObjectIdentifier")
+        for key, label in (("LocalAdmins", "AdminTo"), ("RemoteDesktopUsers", "CanRDP"),
+                           ("PSRemoteUsers", "CanPSRemote"), ("DcomUsers", "ExecuteDCOM"),
+                           ("AllowedToAct", "AllowedToAct")):
+            for m in _results(c, key) or []:
+                add(m.get("ObjectIdentifier"), csid, label)
+        for s in _results(c, "Sessions") or []:
+            uid = s.get("UserSID") if isinstance(s, dict) else None
+            if uid:
+                add(csid, uid, "HasSession")
     return edges
 
 

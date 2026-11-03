@@ -66,10 +66,14 @@ config → orchestrator → modüller (ham çıktı + normalize finding) → fin
 
 ## Yol haritası
 - [x] Çekirdek şasi + guardrail'ler
-- [x] Faz 0 `discovery`, Faz 1 `portscan`
-- [ ] Faz 3 `quickcve` (MS17-010/BlueKeep/Zerologon/coercion — tespit)
-- [ ] Faz 4 `smb`, Faz 5 `ad`, Faz 6 `poison` (opt-in), Faz 7 `kerberos`, Faz 8 `postcred`
-- [ ] Faz 9 `report` (Jinja2 HTML/Markdown)
-- [ ] **Web paneli** (FastAPI + WebSocket) — Nessus tarzı: subnet gir, modül tik'le, canlı ilerleme, bulgu tablosu
-- [ ] *(Faz 2 Nessus — kapsam dışı, bu araçta yok)*
+- [x] Faz 0 `discovery`, Faz 1 `portscan` (ölçek için `-sV` + `--host-timeout`)
+- [x] Faz 2 `services` (LDAP anon bind, DNS AXFR, MSSQL, SNMP)
+- [x] Faz 3 `quickcve` (MS17-010/Zerologon/coercion çeşitleri/PrintNightmare/noPac — tespit)
+- [x] Faz 4 `smb`, Faz 5 `ad` (Kerberoast/ASREP/GPP/delegation/LAPS/gMSA/ADCS ESC1-17)
+- [x] Faz 5 `bloodhound` (DCSync/ACL/Shadow Creds + **saldırı yolu bulma**; `-c All` opt-in yanal yollar)
+- [x] Faz 6 `poison` (relay/coercion yüzeyi), Faz 7 `kerberos` (lockout-aware spray hazırlık), Faz 8 `postcred` (yatay yetki)
+- [x] Faz 9 `report` (Jinja2 HTML/Markdown/JSON)
+- [x] **Web paneli** (FastAPI + WebSocket) — Nessus tarzı: scope + plugin seçimi, canlı ilerleme, bulgu/host/katalog
+- [x] Ölçek-sertleştirme (bulgu konsolidasyonu + cap'ler; 1000-5000 kullanıcı/çok host)
+- [ ] *(Faz 2 Nessus taraması — bilinçli kapsam dışı; slot servis-enum'a ayrıldı)*
 ```

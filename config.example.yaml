@@ -44,3 +44,11 @@ dns: 192.168.1.10
 
 # ── İzin verilen test saatleri (opsiyonel; dışında agresif fazlar çalışmaz)
 time_window: null               # örn: "09:00-18:00"
+
+# ── BloodHound toplama yöntemi
+#    DCOnly (varsayılan): yalnız DC'ye LDAP — host'lara DOKUNMAZ, hızlı; ACL/DCSync/
+#      delegasyon ve bunlara dayalı saldırı yollarını verir.
+#    All: ayrıca her host'a SMB ile session/local-admin/CanRDP toplar → yanal-hareket
+#      yolları (AdminTo→HasSession→DA) çıkar; AMA ölçekte (çok host) yavaş ve gürültülü.
+#      Ham veri BloodHound GUI'ye import edilip manuel de incelenebilir.
+bloodhound_collect: DCOnly      # DCOnly | All
