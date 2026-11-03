@@ -37,8 +37,6 @@ const routes = [
   [/^#\/scans\/([^/]+)\/f\/(.+)$/, viewFinding],
   [/^#\/scans\/([^/]+)$/, viewScanDetail],
   [/^#\/new$/, viewNew],
-  [/^#\/catalog$/, viewCatalog],
-  [/^#\/catalog\/(.+)$/, viewCatalogEntry],
 ];
 function router(){
   const h=location.hash||'#/';
@@ -46,8 +44,7 @@ function router(){
   location.hash='#/scans';
 }
 function setActiveNav(h){
-  const nav = h.startsWith('#/catalog') ? 'catalog' : 'scans';
-  document.querySelectorAll('.nav a').forEach(a=>a.classList.toggle('active', a.dataset.nav===nav));
+  document.querySelectorAll('.nav a').forEach(a=>a.classList.toggle('active', a.dataset.nav==='scans'));
 }
 
 // ── UI yardımcıları: toast + onay modalı + DELETE ──
@@ -78,8 +75,7 @@ async function viewScans(){
   const scans=await get('/api/scans');
   $('#navcnt-scans').textContent=scans.length;
   const hero=`<div class="hero">
-      <div class="h-tx"><h2>Taramalar</h2>
-        <p>İç ağ keşif/enum/tespit koşuları. Her tarama benzersiz bir çıktı dizini tutar; bulgular önem ve güven düzeyiyle normalize edilir — sömürü operatöre bırakılır.</p></div>
+      <div class="h-tx"><h2>Taramalar</h2></div>
       <button class="primary" onclick="location.hash='#/new'"><span style="font-size:16px">+</span> Yeni Tarama</button>
     </div>`;
   if(!scans.length){ C().innerHTML=hero+`<div class="card"><div class="empty">
@@ -247,37 +243,6 @@ function kbCard(e, detailAcc=''){
     </div>
     ${sec('Çözüm önerisi',e.remediation)}
     ${refs?`<div class="kb-sec"><h4>Referanslar</h4><ul style="margin:0;padding-left:18px">${refs}</ul></div>`:''}</div>`;
-}
-
-// ── Zafiyet Kataloğu (bilgi tabanı) ──
-function _sevRank(s){ const i=SEV.indexOf(s); return i<0?99:i; }
-async function viewCatalog(){
-  setTop('Zafiyet Kataloğu','');
-  if(!S.catalog.length) S.catalog=await get('/api/catalog');
-  const byFam={}; S.catalog.forEach(e=>{(byFam[e.phase]=byFam[e.phase]||[]).push(e);});
-  const fams=FAM_ORDER.filter(p=>byFam[p]).concat(Object.keys(byFam).filter(p=>!FAM_ORDER.includes(p)));
-  let html=`<div class="hero"><div class="h-tx"><h2>Zafiyet Kataloğu</h2>
-    <p>Aracın tespit ettiği her bulgu türü için bilgi tabanı: açıklama, tespit yöntemi, sömürü yolu (manuel) ve çözüm önerisi. ${S.catalog.length} kayıt.</p></div></div>`;
-  for(const p of fams){
-    const items=byFam[p].slice().sort((a,b)=>_sevRank(a.severity)-_sevRank(b.severity));
-    html+=`<div class="cat-sec-h">${FAM[p]||p} <span class="muted" style="font-weight:600">${items.length}</span></div>
-      <div class="cat-grid">`+items.map(e=>`
-        <div class="cat-card" onclick="location.hash='#/catalog/${encodeURIComponent(e.id)}'">
-          <div class="cc-h">${sevBadge(e.severity)}${e.manual_only?'<span class="chip manual">sömürü manuel</span>':''}</div>
-          <div class="cc-t">${esc(e.title)}</div>
-          <div class="cc-s">${esc(e.summary||e.description||'')}</div>
-          <div class="cc-f">${(e.cve||[]).slice(0,2).map(c=>`<span class="chip cve">${esc(c)}</span>`).join('')}
-            ${(e.tags||[]).slice(0,3).map(t=>`<span class="chip">${esc(t)}</span>`).join('')}</div>
-        </div>`).join('')+`</div>`;
-  }
-  C().innerHTML=html;
-}
-async function viewCatalogEntry(kb){
-  kb=decodeURIComponent(kb);
-  setTop('Katalog','<a href="#/catalog">Zafiyet Kataloğu</a>');
-  let e=null; try{ e=await get('/api/catalog/'+encodeURIComponent(kb)); }catch(err){}
-  if(!e){ C().innerHTML='<div class="card"><div class="empty"><span class="ei">◇</span>Katalog kaydı bulunamadı.</div></div>'; return; }
-  C().innerHTML=`<div class="backlink" onclick="location.hash='#/catalog'">← Katalog</div>`+kbCard(e);
 }
 
 // ── Yeni Tarama (sekmeli) ──
