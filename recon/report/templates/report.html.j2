@@ -71,6 +71,9 @@
   .kb h4{margin:0 0 4px;font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:#2563eb}
   .kb p{margin:0 0 12px;white-space:pre-line;font-size:13px}
   .kb a{color:#2563eb;word-break:break-all}
+  .kb pre.code{margin:0 0 12px;padding:10px 12px;background:#0b0f14;color:#dbe4ee;
+    border:1px solid var(--line);border-radius:6px;font-family:ui-monospace,Menlo,Consolas,monospace;
+    font-size:12px;line-height:1.5;overflow-x:auto;white-space:pre;tab-size:2}
   footer.rpt{margin-top:40px;padding-top:16px;border-top:1px solid var(--line);
     color:var(--muted);font-size:12px}
   @media print{body{background:#fff}.host,.tile,table{break-inside:avoid}details{display:none}}
@@ -171,7 +174,9 @@
             {% for v in c.mitre or [] %}<span class="tag mitre">{{ v }}</span>{% endfor %}
           </div>
           {% if c.description %}<h4>Açıklama</h4><p>{{ c.description }}</p>{% endif %}
+          {% if c.detect_code %}<h4>Tespit kodu (araç bunu çalıştırır)</h4><pre class="code">{{ c.detect_code | trim }}</pre>{% endif %}
           {% if c.exploitation %}<h4>Sömürü yolu</h4><p>{{ c.exploitation }}</p>{% endif %}
+          {% if c.exploit_code %}<h4>Sömürü kodu (MANUEL — operatör)</h4><pre class="code">{{ c.exploit_code | trim }}</pre>{% endif %}
           {% if c.remediation %}<h4>Çözüm önerisi</h4><p>{{ c.remediation }}</p>{% endif %}
           {% if c.references %}<h4>Referanslar</h4><p>{% for r in c.references %}<a href="{{ r }}">{{ r }}</a><br>{% endfor %}</p>{% endif %}
         </div>

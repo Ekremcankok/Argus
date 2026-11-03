@@ -98,6 +98,43 @@ def parse_gpp_found(output: str) -> bool:
            ("password:" in low or "found" in low or "usernames:" in low)
 
 
+def parse_gpp_creds(output: str) -> list[tuple[str, str]]:
+    """nxc gpp_password çıktısından (kullanıcı, parola) çiftleri."""
+    clean = re.sub(r"\x1b\[[0-9;]*m", "", output or "")
+    users, passes = [], []
+    for m in re.finditer(r"Usernames?\s*:\s*\[?\s*'?([^'\]\r\n]+)", clean, re.I):
+        users += [u.strip() for u in re.split(r"['\",]", m.group(1)) if u.strip()]
+    for m in re.finditer(r"Passwords?\s*:\s*\[?\s*'?([^'\]\r\n]+)", clean, re.I):
+        passes += [p.strip() for p in re.split(r"['\",]", m.group(1)) if p.strip()]
+    pairs = []
+    for i, u in enumerate(users):
+        pairs.append((u, passes[i] if i < len(passes) else "(parola ayrı satırda)"))
+    # Kullanıcı yakalanamadıysa ama parola varsa yine göster
+    if not pairs and passes:
+        pairs = [("(bilinmeyen)", p) for p in passes]
+    return pairs
+
+
+def parse_passpol(output: str) -> list[str]:
+    """nxc --pass-pol çıktısından okunur politika satırları."""
+    clean = re.sub(r"\x1b\[[0-9;]*m", "", output or "")
+    keys = ("Minimum password length", "Password history length",
+            "Maximum password age", "Minimum password age",
+            "Password Complexity", "Password complexity",
+            "Account Lockout Threshold", "Account Lockout Duration",
+            "Reset Account Lockout Counter", "Locked Account Duration")
+    lines = []
+    for line in clean.splitlines():
+        for k in keys:
+            if k.lower() in line.lower():
+                # "SMB ip 445 HOST  Minimum password length: 7" → son anlamlı kısım
+                part = line.split(str(445), 1)[-1]
+                part = re.sub(r"^\s*\S+\s+", "", part).strip() if "445" in line else line.strip()
+                lines.append(part if part else line.strip())
+                break
+    return lines
+
+
 @register
 class ADModule(Module):
     name = "ad"
@@ -239,6 +276,12 @@ class ADModule(Module):
         if res.skipped:
             return []
         if parse_gpp_found(res.stdout + res.stderr):
+            creds = parse_gpp_creds(res.stdout + res.stderr)
+            if creds:
+                detail = "Bulunan kimlikler (SYSVOL Groups.xml, AES çözüldü):\n" + \
+                         "\n".join(f"{u} : {p}" for u, p in creds)
+            else:
+                detail = "cpassword bulundu; parola için ham çıktıya bak (gpp.txt)."
             return [Finding(
                 host=dc, phase=self.name, category="cred",
                 title="GPP cpassword (SYSVOL) — çözülebilir parola",
@@ -246,7 +289,7 @@ class ADModule(Module):
                 exploitable=Exploitable.manual, manual_followup=True,
                 source_tool="netexec", kb_id="gpp-cpassword",
                 evidence_path=str((out_dir / "gpp.txt").as_posix()),
-                notes="AES ile çözülebilir yerel admin parolası (katalog).")]
+                notes=detail)]
         return []
 
     def _maq(self, ctx, dc, cred, out_dir):
@@ -282,17 +325,27 @@ class ADModule(Module):
         if res.skipped:
             return []
         txt = (res.stdout + res.stderr)
+        ev = str((out_dir / "passpol.txt").as_posix())
+        pol = parse_passpol(txt)
+        pol_txt = ("Parola politikası:\n" + "\n".join(pol)) if pol else \
+                  "Politika okunamadı (ham çıktıya bak)."
         m = re.search(r"Account Lockout Threshold[:\s]+(\S+)", txt, re.I)
-        if m and m.group(1).lower() in ("none", "0", "disabled"):
+        weak = bool(m and m.group(1).lower() in ("none", "0", "disabled"))
+        if weak:
             return [Finding(
                 host=dc, phase=self.name, category="config",
                 title="Zayıf parola politikası (lockout yok/düşük)",
                 severity=Severity.medium, confidence=Confidence.detected,
                 exploitable=Exploitable.na, source_tool="netexec",
-                kb_id="weak-password-policy",
-                evidence_path=str((out_dir / "passpol.txt").as_posix()),
-                notes=f"Lockout threshold={m.group(1)} → spray yüzeyi.")]
-        return []
+                kb_id="weak-password-policy", evidence_path=ev,
+                notes=f"Lockout threshold={m.group(1)} → kaba kuvvet/spray yüzeyi.\n" + pol_txt)]
+        # Politika makul olsa da detayını BİLGİ olarak göster
+        return [Finding(
+            host=dc, phase=self.name, category="info",
+            title="Parola politikası", severity=Severity.info,
+            confidence=Confidence.detected, exploitable=Exploitable.na,
+            source_tool="netexec", kb_id="weak-password-policy", evidence_path=ev,
+            notes=pol_txt)]
 
     def _adcs(self, ctx, dc, cred, out_dir):
         # Herhangi bir ESC plugin'i seçiliyse ADCS taraması çalışır

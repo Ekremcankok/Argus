@@ -7,8 +7,10 @@ bulgular "MANUEL" etiketiyle operatöre bırakılır.
 
 Kontroller:
   - MS17-010 (EternalBlue)  : nmap smb-vuln-ms17-010  → 445 açık hostlar
+  - SMBGhost (CVE-2020-0796): netexec -M smbghost      → 445 açık hostlar (yüzey)
   - Zerologon (CVE-2020-1472): netexec -M zerologon    → DC adayları (non-exploit)
-  - PetitPotam coercion     : netexec -M coerce_plus    → DC adayları
+  - Coercion (tek bulgu)    : netexec -M coerce_plus   → DC adayları
+  - PrintNightmare/noPac    : netexec -M <modül>       → 445 / DC
 """
 from __future__ import annotations
 
@@ -45,22 +47,18 @@ def parse_ms17010_vulnerable(xml_text: str) -> bool:
     return False
 
 
-_COERCE_KB = {"petitpotam": "petitpotam", "printerbug": "printerbug",
-              "dfscoerce": "dfscoerce"}
-
-
 def parse_coercion(output: str) -> set[str]:
-    """coerce_plus çıktısından zafiyetli coercion yöntemlerinin kb_id'leri.
+    """coerce_plus çıktısından zafiyetli coercion YÖNTEM adlarını döndürür.
 
     Satır formatı: 'COERCE_PLUS ... VULNERABLE, PetitPotam'
+    Hepsi aynı 'DC auth zorlama' yüzeyi olduğundan tek bulguda birleştirilir;
+    burada yalnız insan-okunur yöntem adları toplanır (PetitPotam, PrinterBug…).
     """
     clean = re.sub(r"\x1b\[[0-9;]*m", "", output or "")
-    kbs = set()
+    methods = set()
     for m in re.finditer(r"VULNERABLE,\s*([A-Za-z]+)", clean):
-        kb = _COERCE_KB.get(m.group(1).lower())
-        if kb:
-            kbs.add(kb)
-    return kbs
+        methods.add(m.group(1))
+    return methods
 
 
 def parse_nxc_vulnerable(output: str) -> bool:
@@ -86,11 +84,11 @@ class QuickCVEModule(Module):
     intrusive = False
     default_enabled = True
 
-    # Bu modülün ürettiği plugin (kb_id) kümesi
-    # NOT: SMBGhost (CVE-2020-0796) ve BlueKeep güvenilir uzaktan tespiti YOK —
-    # smbghost "compression capability" indicator'ı tüm modern Windows'ta true
-    # (yama durumunu göstermez, yanlış pozitif) → katalog-only (manuel).
-    PLUGINS = {"ms17-010", "zerologon", "petitpotam", "printerbug", "dfscoerce",
+    # Bu modülün ürettiği plugin (kb_id) kümesi.
+    # Coercion (PetitPotam/PrinterBug/DFSCoerce) tek 'coercion' bulgusunda birleşir.
+    # SMBGhost: nxc smbghost (SMB 3.1.1 + compression göstergesi) ile yüzey tespiti;
+    # yama durumu uzaktan kesinleşmez → confidence=probable, notta belirtilir.
+    PLUGINS = {"ms17-010", "zerologon", "coercion", "smbghost",
                "printnightmare", "nopac"}
 
     def requires(self, ctx: ModuleContext) -> Optional[str]:
@@ -107,9 +105,11 @@ class QuickCVEModule(Module):
 
         if ctx.plugin_enabled("ms17-010"):
             findings += self._ms17010(ctx, out_dir)
+        if ctx.plugin_enabled("smbghost"):
+            findings += self._smbghost(ctx, out_dir)
         if ctx.plugin_enabled("zerologon"):
             findings += self._zerologon(ctx, out_dir)
-        if any(ctx.plugin_enabled(k) for k in ("petitpotam", "printerbug", "dfscoerce")):
+        if ctx.plugin_enabled("coercion"):
             findings += self._coercion(ctx, out_dir)
         if ctx.plugin_enabled("printnightmare"):
             findings += self._nxc_vuln(ctx, out_dir, "printnightmare", "printnightmare",
@@ -175,11 +175,34 @@ class QuickCVEModule(Module):
         from ._tools import nxc_auth
         return nxc_auth(ctx.primary_credential())
 
-    # ── Coercion yüzeyi: PetitPotam/PrinterBug/DFSCoerce (coerce_plus) ──
-    _COERCE_TITLE = {"petitpotam": "PetitPotam (MS-EFSR) coercion açık",
-                     "printerbug": "PrinterBug (MS-RPRN) coercion açık",
-                     "dfscoerce": "DFSCoerce (MS-DFSNM) coercion açık"}
+    # ── SMBGhost (CVE-2020-0796) yüzeyi: nxc smbghost (SMB 3.1.1 + compression) ──
+    def _smbghost(self, ctx: ModuleContext, out_dir: Path) -> list[Finding]:
+        nxc = _nxc_binary()
+        if not nxc:
+            return []
+        findings = []
+        for ip in ctx.inventory.hosts_with_port(445):  # 445 kapalıysa bakma
+            if not ctx.scope.is_allowed(ip):
+                continue
+            cmd = [nxc, "smb", ip, "-u", "", "-p", "", "-M", "smbghost"]
+            res = ctx.runner.run(cmd, timeout=120, raw_path=out_dir / f"{ip}_smbghost.txt")
+            if res.skipped:
+                continue
+            if parse_nxc_vulnerable(res.stdout + res.stderr):
+                findings.append(Finding(
+                    host=ip, port=445, phase=self.name, category="vuln",
+                    title="SMBGhost (CVE-2020-0796) yüzeyi",
+                    severity=Severity.high, confidence=Confidence.probable,
+                    exploitable=Exploitable.manual, manual_followup=True,
+                    source_tool="netexec", kb_id="smbghost",
+                    evidence_path=str((out_dir / f"{ip}_smbghost.txt").as_posix()),
+                    notes=("SMB 3.1.1 + compression etkin (SMBGhost göstergesi). "
+                           "Yalnız Win10/Server 1903-1909 ve YAMASIZ ise RCE/LPE; "
+                           "yama durumu uzaktan kesinleşmez — build/KB ile teyit et.")))
+                self.log().warning("SMBGhost yüzeyi: %s", ip)
+        return findings
 
+    # ── Coercion yüzeyi: PetitPotam/PrinterBug/DFSCoerce → TEK bulgu (coerce_plus) ──
     def _coercion(self, ctx: ModuleContext, out_dir: Path) -> list[Finding]:
         nxc = _nxc_binary()
         if not nxc:
@@ -192,17 +215,19 @@ class QuickCVEModule(Module):
             if res.skipped:
                 continue
             ev = str((out_dir / f"{ip}_coerce.txt").as_posix())
-            for kb in sorted(parse_coercion(res.stdout + res.stderr)):
-                if not ctx.plugin_enabled(kb):
-                    continue
-                findings.append(Finding(
-                    host=ip, port=135, phase=self.name, category="config",
-                    title=self._COERCE_TITLE.get(kb, f"{kb} coercion açık"),
-                    severity=Severity.high, confidence=Confidence.detected,
-                    exploitable=Exploitable.manual, manual_followup=True,
-                    source_tool="netexec", kb_id=kb, evidence_path=ev,
-                    notes="Kimlik doğrulamasız zorlama → relay zinciri MANUEL."))
-                self.log().warning("Coercion (%s): %s", kb, ip)
+            methods = sorted(parse_coercion(res.stdout + res.stderr))
+            if not methods:
+                continue
+            # Hepsi aynı 'DC auth zorlama' yüzeyi → tek bulgu, yöntemleri notta listele
+            findings.append(Finding(
+                host=ip, port=135, phase=self.name, category="config",
+                title=f"DC auth zorlama (coercion) açık: {len(methods)} yöntem",
+                severity=Severity.high, confidence=Confidence.detected,
+                exploitable=Exploitable.manual, manual_followup=True,
+                source_tool="netexec", kb_id="coercion", evidence_path=ev,
+                notes=(f"Açık yöntem(ler): {', '.join(methods)}. Kimlik doğrulamasız "
+                       "DC auth zorlama → relay zinciri (ESC8/signing=false) MANUEL.")))
+            self.log().warning("Coercion açık (%s): %s", ", ".join(methods), ip)
         return findings
 
     # ── Generic nxc -M <modül> zafiyet kontrolü ──

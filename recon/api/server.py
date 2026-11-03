@@ -57,6 +57,47 @@ class Event:
     message: str
 
 
+_SEV_RANK = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
+
+
+def _rank_rows(rows: list[dict]) -> list[dict]:
+    return sorted(rows, key=lambda r: (_SEV_RANK.get(r.get("severity"), 9),
+                                       0 if r.get("manual_followup") else 1,
+                                       r.get("host", "")))
+
+
+def _load_findings_dir(run_dir: Optional[str]) -> Optional[list[dict]]:
+    """Tamamlanmış taramanın bulgularını diskteki findings.jsonl'den okur."""
+    if not run_dir:
+        return None
+    p = Path(run_dir) / "findings.jsonl"
+    if not p.exists():
+        return None
+    import json as _json
+    rows = []
+    for line in p.read_text(encoding="utf-8", errors="ignore").splitlines():
+        line = line.strip()
+        if line:
+            try:
+                rows.append(_json.loads(line))
+            except ValueError:
+                pass
+    return _rank_rows(rows)
+
+
+def _load_inventory_dir(run_dir: Optional[str]) -> Optional[dict]:
+    if not run_dir:
+        return None
+    p = Path(run_dir) / "inventory.json"
+    if not p.exists():
+        return None
+    import json as _json
+    try:
+        return _json.loads(p.read_text(encoding="utf-8", errors="ignore"))
+    except ValueError:
+        return None
+
+
 @dataclass
 class Job:
     id: str
@@ -71,12 +112,39 @@ class Job:
     summary: dict = field(default_factory=dict)
     error: Optional[str] = None
     orch: object = None
+    # Tarama bitince / diskten doldurulan kalıcı snapshot (orch'tan bağımsız)
+    _findings: Optional[list] = None
+    _inventory: Optional[dict] = None
 
     @property
     def name(self) -> str:
         return self.request.name or f"Tarama {self.id}"
 
+    def snapshot_results(self) -> None:
+        """Tarama bitince bulgu+envanteri belleğe sabitler (orch kapansa da durur)."""
+        if self.orch is not None:
+            try:
+                self._findings = self.orch.store.ranked()
+            except Exception:
+                pass
+            try:
+                self._inventory = self.orch.inventory.snapshot()
+            except Exception:
+                pass
+
     def findings(self) -> list[dict]:
+        # Çalışırken canlı store; bitince sabitlenmiş snapshot; o da yoksa disk.
+        if self.status == "running" and self.orch is not None:
+            try:
+                return self.orch.store.ranked()
+            except Exception:
+                pass
+        if self._findings is not None:
+            return self._findings
+        fs = _load_findings_dir(self.run_dir)
+        if fs is not None:
+            self._findings = fs
+            return fs
         if self.orch is not None:
             try:
                 return self.orch.store.ranked()
@@ -85,6 +153,17 @@ class Job:
         return []
 
     def inventory(self) -> dict:
+        if self.status == "running" and self.orch is not None:
+            try:
+                return self.orch.inventory.snapshot()
+            except Exception:
+                pass
+        if self._inventory is not None:
+            return self._inventory
+        inv = _load_inventory_dir(self.run_dir)
+        if inv is not None:
+            self._inventory = inv
+            return inv
         if self.orch is not None:
             try:
                 return self.orch.inventory.snapshot()
@@ -119,6 +198,37 @@ class JobManager:
         self.base_config_path = base_config_path
         self.jobs: list[Job] = []
         self._thread: Optional[threading.Thread] = None
+        self._load_history()
+
+    def _load_history(self) -> None:
+        """Önceki tarama çıktılarını (output/<tarih>_<id>) 'done' job olarak yükle.
+
+        Panel yeniden başlasa da geçmiş taramalar ve bulguları kaybolmaz
+        (bulgular diskteki findings.jsonl'den okunur).
+        """
+        import re as _re
+        try:
+            out = (load_config(self.base_config_path).output_dir
+                   if self.base_config_path.exists() else Path("output"))
+        except Exception:
+            out = Path("output")
+        out = Path(out)
+        if not out.exists():
+            return
+        dirs = [d for d in out.glob("*") if d.is_dir()
+                and (d / "findings.jsonl").exists()]
+        for d in sorted(dirs, key=lambda p: p.stat().st_mtime):
+            m = _re.match(r"^\d{4}-\d{2}-\d{2}_([0-9a-fA-F]{6,})$", d.name)
+            if not m:
+                continue
+            jid = m.group(1)
+            if any(j.id == jid for j in self.jobs):
+                continue
+            mt = d.stat().st_mtime
+            self.jobs.append(Job(
+                id=jid, request=ScanRequest(name=f"Tarama {jid} (geçmiş)", include=[]),
+                status="done", run_dir=str(d),
+                created_at=mt, started_at=mt, finished_at=mt))
 
     @property
     def active(self) -> Optional[Job]:
@@ -201,6 +311,8 @@ class JobManager:
         job.summary = {}
         job.error = None
         job.finished_at = None
+        job._findings = None
+        job._inventory = None
 
         enabled = set(req.modules) if req.modules is not None else None
         plugins = set(req.plugins) if req.plugins is not None else None
@@ -227,6 +339,9 @@ class JobManager:
                 job.error = str(e)
             finally:
                 job.finished_at = time.time()
+                # Bulgu+envanteri belleğe sabitle: tamamlanınca orch.store'a
+                # bağımlı kalmasın (canlıda görünen bulgular kaybolmasın).
+                job.snapshot_results()
 
         self._thread = threading.Thread(target=worker, daemon=True)
         self._thread.start()

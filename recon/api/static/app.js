@@ -150,6 +150,12 @@ async function viewFinding(id,fid){
   const f=finds.find(x=>x.id===fid);
   if(!f){ C().innerHTML='<div class="card"><div class="empty">Bulgu bulunamadı.</div></div>'; return; }
   let kb=null; if(f.kb_id){ try{ kb=await get('/api/catalog/'+f.kb_id);}catch(e){} }
+  // Bulgu detayı (tespit edilenler) — künyede değil, tespit kodunun hemen üstünde
+  // açılır-kapanır accordion (tespit/sömürü kutularıyla aynı biçim).
+  const n=(f.notes||'').trim();
+  const detailAcc = n
+    ? `<details class="acc detail" open><summary><span class="acc-ic">📋</span>Bulgu detayı — tespit edilenler</summary><div class="acc-body"><pre class="code">${esc(n)}</pre></div></details>`
+    : '';
   C().innerHTML=`<div class="backlink" onclick="history.back()">← Geri</div>
     <div class="card" style="margin-bottom:16px">
       <div class="kb-head">${sevBadge(f.severity)}<h1 style="margin:0;font-size:20px">${esc(f.title)}</h1></div>
@@ -160,22 +166,34 @@ async function viewFinding(id,fid){
         <span class="k">Sömürülebilir</span><span>${f.exploitable}${f.manual_followup?' <span class="chip manual">MANUEL DOĞRULA</span>':''}</span>
         <span class="k">Kaynak araç</span><span>${esc(f.source_tool||'—')}</span>
         <span class="k">Kanıt</span><span class="mono" style="font-size:12px">${esc(f.evidence_path||'—')}</span>
-        ${f.notes?`<span class="k">Not</span><span>${esc(f.notes)}</span>`:''}
-      </div></div>
-    ${kb?kbCard(kb):'<div class="card muted">Bu bulgu için katalog kaydı yok.</div>'}`;
+      </div>
+    </div>
+    ${kb ? kbCard(kb, detailAcc)
+         : (detailAcc ? `<div class="card"><div class="acc-wrap">${detailAcc}</div></div>`
+                      : '<div class="card muted">Bu bulgu için katalog kaydı yok.</div>')}`;
 }
-function kbCard(e){
+function kbCard(e, detailAcc=''){
   const cve=(e.cve||[]).map(c=>`<span class="chip cve">${esc(c)}</span>`).join(' ');
   const mitre=(e.mitre||[]).map(c=>`<span class="chip mitre">${esc(c)}</span>`).join(' ');
   const tags=(e.tags||[]).map(t=>`<span class="chip">${esc(t)}</span>`).join(' ');
   const refs=(e.references||[]).map(r=>`<li><a href="${esc(r)}" target="_blank" rel="noopener">${esc(r)}</a></li>`).join('');
   const sec=(t,v,cls)=>v?`<div class="kb-sec"><h4>${t}</h4>${cls?`<div class="callout ${cls}"><p>${esc(v)}</p></div>`:`<p>${esc(v)}</p>`}</div>`:'';
+  const code=v=>`<pre class="code">${esc((v||'').replace(/\n+$/,''))}</pre>`;
+  // Tespit ve Sömürü: tıklayınca bulgunun altında açılan ayrı alanlar (accordion)
+  const detectBody = e.detect_code ? code(e.detect_code) : '';
+  const exploitBody = (e.exploitation ? `<p class="xp-note">${esc(e.exploitation)}</p>` : '')
+                    + (e.exploit_code ? code(e.exploit_code) : '');
+  const acc=(ic,t,body,cls)=>body?`<details class="acc ${cls||''}"><summary><span class="acc-ic">${ic}</span>${t}</summary><div class="acc-body">${body}</div></details>`:'';
   return `<div class="card">
     <div class="kb-head">${sevBadge(e.severity)}<h2 style="text-transform:none;letter-spacing:0;color:var(--fg);font-size:17px;margin:0">${esc(e.title)}</h2>
       ${e.manual_only?'<span class="chip manual">sömürü manuel</span>':''}</div>
     <div style="margin:6px 0 16px">${cve} ${mitre} ${tags}</div>
     ${sec('Özet',e.summary)}${sec('Açıklama',e.description)}
-    ${sec('Sömürü yolu',e.exploitation,e.manual_only?'crit':'')}
+    <div class="acc-wrap">
+      ${detailAcc}
+      ${acc('🔍','Tespit — araç bunu çalıştırır',detectBody,'detect')}
+      ${acc('⚡','Sömürü — MANUEL (operatör)',exploitBody,'exploit')}
+    </div>
     ${sec('Çözüm önerisi',e.remediation)}
     ${refs?`<div class="kb-sec"><h4>Referanslar</h4><ul style="margin:0;padding-left:18px">${refs}</ul></div>`:''}</div>`;
 }

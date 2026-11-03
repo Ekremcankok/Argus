@@ -27,6 +27,10 @@ _ROLE_PORTS = {
     53: "dns",
 }
 
+# Aynı anda en fazla kaç hosta dokunulur (sert tavan). config.max_hosts bunu
+# aşamaz: 1000 IP'lik kapsamda 1000 paralel nmap açılıp sistem/ağ kilitlenmesin.
+_MAX_PARALLEL = 100
+
 # Rapora info bulgusu olarak düşecek yüksek değerli servisler
 # (başlık, önem, kb_id → zafiyet kataloğu kaydı)
 _NOTABLE = {
@@ -42,7 +46,7 @@ class PortScanModule(Module):
     name = "portscan"
     label = "Port & Servis Tarama"
     phase = 1
-    description = "Canlı hostlarda nmap -sV -sC; servis/sürüm + rol tahmini."
+    description = "Canlı hostlarda nmap -sV; açık port/servis/sürüm + rol tahmini (host başına açık port bulgusu)."
     intrusive = False
     default_enabled = True
 
@@ -54,7 +58,7 @@ class PortScanModule(Module):
             log.warning("canlı host yok — önce discovery çalışmalı")
             return []
 
-        max_workers = min(ctx.config.concurrency.max_hosts, max(1, len(hosts)))
+        max_workers = min(ctx.config.concurrency.max_hosts, _MAX_PARALLEL, max(1, len(hosts)))
         ctx.progress(self.name, f"{len(hosts)} host, {max_workers} paralel")
 
         # Host başına yalnız inventory doldurulur (bulgu üretilmez — ölçekte flood olmasın)
@@ -68,11 +72,39 @@ class PortScanModule(Module):
                 except Exception as e:  # tek host hatası diğerlerini durdurmasın
                     log.error("port tarama hatası %s: %s", ip, e)
 
-        # Servis envanteri rapor/host-detayında zaten var; burada yalnız KONSOLİDE
-        # özet bulgular (host başına değil, servis tipine göre tek kayıt).
-        findings = self._summaries(ctx, out_dir)
-        ctx.progress(self.name, f"tamam ({len(findings)} özet)")
+        # Her host için açık portları gösteren BİLGİ bulgusu (operatör IP bazında
+        # açık portları görebilsin) + servis tipine göre KONSOLİDE özetler.
+        findings = self._open_ports(ctx, out_dir)
+        findings += self._summaries(ctx, out_dir)
+        ctx.progress(self.name, f"tamam ({len(findings)} bulgu)")
         return findings
+
+    def _open_ports(self, ctx: ModuleContext, out_dir: Path) -> list[Finding]:
+        """TÜM hostların açık portlarını TEK bilgi bulgusunda toplar.
+
+        Format (açıklamada): '192.168.1.10 -> 53,88,135,389,445'. Detaylı
+        servis/sürüm bilgisi Hostlar sekmesinde; burada port-haritası özeti.
+        """
+        lines = []
+        hostcount = 0
+        for ip in sorted(ctx.inventory.live_hosts(),
+                         key=lambda x: tuple(int(o) for o in x.split("."))
+                         if x.count(".") == 3 and all(o.isdigit() for o in x.split(".")) else (x,)):
+            h = ctx.inventory.hosts.get(ip)
+            if not h or not h.services or not ctx.scope.is_allowed(ip):
+                continue
+            ports = ",".join(str(p) for p in sorted(h.services))
+            lines.append(f"{ip} -> {ports}")
+            hostcount += 1
+        if not lines:
+            return []
+        return [Finding(
+            host="scope", phase=self.name, category="info",
+            title=f"Açık portlar ({hostcount} host)",
+            severity=Severity.info, confidence=Confidence.detected,
+            exploitable=Exploitable.na, source_tool="nmap",
+            kb_id="open-ports", evidence_path=str(out_dir.as_posix()),
+            notes="\n".join(lines))]
 
     def _scan_host(self, ctx: ModuleContext, ip: str, out_dir: Path) -> None:
         ctx.scope.assert_allowed(ip)  # belt-and-suspenders

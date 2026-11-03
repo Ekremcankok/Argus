@@ -48,6 +48,18 @@
 - **[{{ f.severity|sev_tr }}]** {{ f.title }}{% if f.port %} (:{{ f.port }}){% endif %}{% if f.manual_followup %} `MANUEL`{% endif %} — _{{ f.source_tool }}_
 {% if f.notes %}  - {{ f.notes }}
 {% endif %}
+{% if f.catalog and f.catalog.detect_code %}  - **Tespit kodu (araç):**
+
+    ```bash
+{{ f.catalog.detect_code|trim|indent(4, true) }}
+    ```
+{% endif %}
+{% if f.catalog and f.catalog.exploit_code %}  - **Sömürü kodu (MANUEL):**
+
+    ```bash
+{{ f.catalog.exploit_code|trim|indent(4, true) }}
+    ```
+{% endif %}
 {% if f.catalog and f.catalog.remediation %}  - **Çözüm:** {{ f.catalog.remediation|trim }}
 {% endif %}
 {% endfor %}

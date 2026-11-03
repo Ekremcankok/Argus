@@ -1,8 +1,8 @@
 """Faz 2 — Servis Bazlı Enumerasyon.
 
-Açık portu görmek yetmez; servise özel kontrol: LDAP anonymous bind, DNS zone
-transfer (AXFR), MSSQL erişim, SNMP default community. Hepsi tespit/enum —
-MSSQL komut yürütme vb. manuel/opt-in.
+Açık portu görmek yetmez; servise özel kontrol: LDAP anonymous bind, MSSQL
+erişim, SNMP default community. Hepsi tespit/enum — MSSQL komut yürütme vb.
+manuel/opt-in. (DNS zone transfer kaldırıldı.)
 """
 from __future__ import annotations
 
@@ -13,22 +13,10 @@ from typing import Optional
 
 from ..findings import Finding, Severity, Confidence, Exploitable
 from ..registry import register
-from ._tools import nxc_binary, nxc_auth, which_any, summarize
+from ._tools import nxc_binary, nxc_auth, which_any
 from .base import Module, ModuleContext
 
 _IP = re.compile(r"(\d{1,3}(?:\.\d{1,3}){3})")
-
-
-def parse_axfr_ok(output: str) -> bool:
-    """dig axfr başarılı mı? (SOA + kayıtlar var, 'failed/timeout' yok)"""
-    low = output.lower()
-    if any(x in low for x in ("transfer failed", "connection timed out",
-                              "communications error", "couldn't get address")):
-        return False
-    # Başarılı AXFR SOA ile başlayıp biter; birden çok kayıt döner
-    if "xfr size" in low:
-        return True
-    return output.count(" IN ") >= 3 and "soa" in low
 
 
 def parse_ldap_anon_users(output: str) -> bool:
@@ -65,13 +53,12 @@ class ServicesModule(Module):
     name = "services"
     label = "Servis Enum"
     phase = 2
-    description = ("Servise özel kontroller: LDAP anonymous bind, DNS zone transfer, "
-                   "MSSQL erişim, SNMP default community.")
+    description = ("Servise özel kontroller: LDAP anonymous bind, MSSQL erişim, "
+                   "SNMP default community.")
     intrusive = False
     default_enabled = True
 
-    PLUGINS = {"ldap-anonymous-bind", "dns-zone-transfer", "mssql-access",
-               "snmp-default-community"}
+    PLUGINS = {"ldap-anonymous-bind", "mssql-access", "snmp-default-community"}
 
     def requires(self, ctx: ModuleContext) -> Optional[str]:
         if not ctx.inventory.live_hosts():
@@ -85,7 +72,6 @@ class ServicesModule(Module):
         out_dir = ctx.phase_dir(self.name)
         findings: list[Finding] = []
         findings += self._ldap_anon(ctx, out_dir)
-        findings += self._dns_axfr(ctx, out_dir)
         findings += self._mssql(ctx, out_dir)
         findings += self._snmp(ctx, out_dir)
         log.info("%d servis bulgusu", len(findings))
@@ -116,41 +102,6 @@ class ServicesModule(Module):
                     kb_id="ldap-anonymous-bind",
                     evidence_path=str((out_dir / f"{ip}_ldapanon.txt").as_posix()),
                     notes="Kimlik doğrulamasız dizin bilgisi sızıntısı."))
-        return out
-
-    # ── DNS zone transfer (AXFR) ──
-    def _dns_axfr(self, ctx, out_dir):
-        if not ctx.plugin_enabled("dns-zone-transfer"):
-            return []
-        dig = which_any("dig")
-        if not dig:
-            return []
-        domain = None
-        cred = ctx.primary_credential()
-        if cred and cred.domain:
-            domain = cred.domain
-        elif ctx.config.dc:  # domain bilinmiyorsa en azından dene
-            domain = None
-        out = []
-        dns_hosts = set(ctx.inventory.hosts_with_port(53)) | set(ctx.inventory.hosts_with_role("dns"))
-        for ip in dns_hosts:
-            if not ctx.scope.is_allowed(ip):
-                continue
-            doms = [domain] if domain else []
-            for d in doms:
-                res = ctx.runner.run([dig, "axfr", d, f"@{ip}", "+time=5"],
-                                     timeout=60, raw_path=out_dir / f"{ip}_axfr.txt")
-                if res.skipped:
-                    continue
-                if parse_axfr_ok(res.stdout):
-                    out.append(Finding(
-                        host=ip, port=53, phase=self.name, category="config",
-                        title=f"DNS zone transfer (AXFR) açık: {d}",
-                        severity=Severity.medium, confidence=Confidence.detected,
-                        exploitable=Exploitable.na, source_tool="dig",
-                        kb_id="dns-zone-transfer",
-                        evidence_path=str((out_dir / f"{ip}_axfr.txt").as_posix()),
-                        notes="Tüm zone kayıtları çekilebiliyor (iç ağ haritası)."))
         return out
 
     # ── MSSQL erişim ──

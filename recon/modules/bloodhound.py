@@ -261,6 +261,23 @@ class BloodHoundModule(Module):
             return "bloodhound-python kurulu değil"
         return None
 
+    def _discover_domain(self, ctx: ModuleContext, dc: str, out_dir: Path) -> Optional[str]:
+        """DC'nin SMB banner'ından gerçek FQDN domaini (ör. lab.local) çıkarır."""
+        nxc = which_any("nxc", "netexec", "crackmapexec")
+        if not nxc:
+            return None
+        res = ctx.runner.run([nxc, "smb", dc], timeout=60,
+                             raw_path=out_dir / "dcinfo.txt")
+        if res.skipped:
+            return None
+        txt = re.sub(r"\x1b\[[0-9;]*m", "", res.stdout + res.stderr)
+        m = re.search(r"\(domain:([^)]+)\)", txt, re.I)
+        if m and "." in m.group(1):
+            fqdn = m.group(1).strip()
+            self.log().info("FQDN domain keşfedildi: %s", fqdn)
+            return fqdn
+        return None
+
     def run(self, ctx: ModuleContext) -> list[Finding]:
         log = self.log()
         out_dir = ctx.phase_dir(self.name)
@@ -272,7 +289,12 @@ class BloodHoundModule(Module):
         kind, val = cred.secret()
         auth = ["-u", cred.username] + (["--hashes", f":{val}"] if kind == "hash"
                                         else ["-p", val])
+        # bloodhound-python DC'yi FQDN domain üzerinden DNS ile bulur; kısa ad
+        # ('lab') verilirse "No address associated with hostname" ile patlar.
+        # Bu yüzden FQDN değilse DC'den gerçek domaini (lab.local) keşfet.
         domain = cred.domain or ""
+        if "." not in domain:
+            domain = self._discover_domain(ctx, dc, out_dir) or domain
         prefix = str((out_dir / "bh").as_posix())
         collect = getattr(ctx.config, "bloodhound_collect", "DCOnly")
         # All = her host'a dokunur (ölçekte yavaş); timeout'u buna göre uzat
@@ -348,26 +370,54 @@ class BloodHoundModule(Module):
         # ── Saldırı yolu: elimizdeki/geniş principal → yüksek-değer hedef ──
         if ctx.plugin_enabled("attack-path"):
             sid2name = _sid_name_map(objs)
-            name2sid = {v.upper(): k for k, v in sid2name.items() if v}
-            starts = []
-            up = (f"{cred.username}@{cred.domain}" if cred.domain else cred.username).upper()
-            if up in name2sid:
-                starts.append(name2sid[up])
-            # Domain Users (-513) + geniş principal'ler (varsa düğüm olarak)
+            # İsim→SID: UPN, sAMAccountName ve 'DOMAIN\user' biçimlerini eşle
+            name2sid: dict[str, str] = {}
+            for s, nm in sid2name.items():
+                if nm:
+                    name2sid[nm.upper()] = s
+            starts, start_names = [], []
+            uname = cred.username.upper()
+            dom = (cred.domain or "").upper()
+            cands = [f"{uname}@{dom}", uname, f"{dom}\\{uname}",
+                     (dom.split(".")[0] + "\\" + uname if dom else uname)]
+            for cand in cands:
+                if cand in name2sid and name2sid[cand] not in starts:
+                    starts.append(name2sid[cand])
+                    start_names.append(sid2name.get(name2sid[cand], cand))
+            # Domain Users (-513) + Authenticated Users / Everyone (geniş principal)
             for sid in sid2name:
                 if sid.endswith("-513") or sid in ("S-1-5-11", "S-1-1-0"):
-                    starts.append(sid)
-            for p in compute_paths(objs, list(dict.fromkeys(starts)), sid2name):
+                    if sid not in starts:
+                        starts.append(sid)
+            paths = compute_paths(objs, list(dict.fromkeys(starts)), sid2name)
+            for p in paths:
                 chain = f"{p['start']}"
                 for frm, lbl, to in p["hops"]:
-                    chain += f" --{lbl}--> {to}"
+                    chain += f"\n   --{lbl}--> {to}"
                 findings.append(Finding(
                     host=dc, phase=self.name, category="config",
                     title=f"Saldırı yolu: {p['start']} → {p['kind']} ({len(p['hops'])} adım)",
                     severity=Severity.critical, confidence=Confidence.detected,
                     exploitable=Exploitable.manual, manual_followup=True,
                     source_tool="bloodhound-python", kb_id="attack-path",
-                    evidence_path=ev, notes=chain))
+                    evidence_path=ev, notes="Zincir:\n" + chain))
+            if not paths:
+                # Yol bulunamadı → neden olduğunu açıkça yaz (operatör boşlukta kalmasın)
+                who = ", ".join(start_names) if start_names else cred.principal
+                extra = ("" if collect == "All" else
+                         " NOT: toplama 'DCOnly' — AdminTo/HasSession gibi makine "
+                         "yolları için config'de bloodhound_collect: All yapın.")
+                findings.append(Finding(
+                    host=dc, phase=self.name, category="info",
+                    title="Saldırı yolu bulunamadı (otomatik analiz)",
+                    severity=Severity.info, confidence=Confidence.detected,
+                    exploitable=Exploitable.na, source_tool="bloodhound-python",
+                    kb_id="attack-path", evidence_path=ev,
+                    notes=(f"Başlangıç: {who} + Domain/Authenticated Users. Grafikte "
+                           f"yüksek-değer hedefe (DA/EA/DC/domain) suistimal edilebilir "
+                           f"kenar zinciri çıkmadı.{extra} "
+                           "Yine de yukarıdaki ACL/DCSync bulgularını ve BloodHound "
+                           "GUI'sini manuel inceleyin.")))
 
         log.info("%d BloodHound bulgusu", len(findings))
         ctx.progress(self.name, f"{len(findings)} bulgu")
