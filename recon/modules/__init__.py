@@ -11,6 +11,7 @@ import importlib
 _BUILTIN = [
     "recon.modules.discovery",
     "recon.modules.portscan",
+    "recon.modules.services",
     "recon.modules.quickcve",
     "recon.modules.smb",
     "recon.modules.ad",

@@ -1193,3 +1193,43 @@ password-spray:
   remediation: "Güçlü parola politikası, makul lockout, sık parolaları yasakla, MFA."
   references:
     - "https://book.hacktricks.xyz/windows-hardening/active-directory-methodology/password-spraying"
+
+dns-zone-transfer:
+  title: "DNS zone transfer (AXFR) açık"
+  severity: medium
+  category: config
+  phase: services
+  manual_only: false
+  tags: [dns, enum]
+  summary: "DNS sunucusu AXFR'a izin veriyor → tüm zone kayıtları (iç ağ haritası)."
+  description: >
+    DNS sunucusu kimlik doğrulamasız zone transfer'a (AXFR) izin veriyor;
+    tüm A/CNAME/SRV kayıtları çekilerek iç ağ, host adları ve servisler
+    (DC, SQL, mail) haritalanır.
+  exploitation: "OTOMATİK enum (dig axfr). Bilgi toplama — doğrudan erişim değil."
+  remediation: >
+    Zone transfer'ı yalnız yetkili ikincil DNS sunucularına kısıtlayın;
+    AD-entegre DNS'te 'yalnız güvenli' transfer.
+  references:
+    - "https://book.hacktricks.xyz/network-services-pentesting/pentesting-dns"
+
+mssql-access:
+  title: "MSSQL erişimi (kimlikli/zayıf)"
+  severity: high
+  category: cred
+  phase: services
+  manual_only: true
+  tags: [mssql, db, lateral]
+  summary: "MSSQL'e kimlikle erişim (sysadmin ise xp_cmdshell/linked-server → RCE/yanal)."
+  description: >
+    Elde edilen domain kimliği veya zayıf/varsayılan hesapla MSSQL'e erişim.
+    sysadmin ise xp_cmdshell ile komut yürütme; linked-server zincirleriyle
+    başka SQL sunuculara ve yanal harekete yol açar.
+  exploitation: >
+    MANUEL — mssqlclient ile bağlan; sysadmin'de xp_cmdshell/komut yürütme,
+    linked-server zinciri (EXECUTE AS). Komut yürütme opt-in + yetki gerektirir.
+  remediation: >
+    En az yetki, xp_cmdshell kapalı, güçlü kimlik, linked-server hesaplarını
+    kısıtla, Windows auth tercih et.
+  references:
+    - "https://book.hacktricks.xyz/network-services-pentesting/pentesting-mssql-microsoft-sql-server"

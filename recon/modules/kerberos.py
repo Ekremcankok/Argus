@@ -23,7 +23,16 @@ def parse_lockout(output: str) -> Optional[str]:
 
 def parse_user_count(output: str) -> Optional[int]:
     m = re.search(r"Enumerated\s+(\d+)\s+users", output, re.I)
-    return int(m.group(1)) if m else None
+    if m:
+        return int(m.group(1))
+    # Fallback: nxc --users satırlarından benzersiz kullanıcı say
+    # Satır: 'LDAP  <ip>  389  <host>  <username>  <badpwdcount> ...'
+    users = set()
+    for line in (output or "").splitlines():
+        p = line.split()
+        if len(p) >= 5 and re.match(r"\d{1,3}(?:\.\d{1,3}){3}$", p[1]) and not p[4].startswith("["):
+            users.add(p[4])
+    return len(users) or None
 
 
 @register
