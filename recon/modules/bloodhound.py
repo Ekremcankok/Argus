@@ -377,7 +377,9 @@ class BloodHoundModule(Module):
                     name2sid[nm.upper()] = s
             starts, start_names = [], []
             uname = cred.username.upper()
-            dom = (cred.domain or "").upper()
+            # Çözülen FQDN'i kullan (kısa ad 'lab' verilse de BloodHound isimleri
+            # FQDN'dir: lowpriv@LAB.LOCAL) ki başlangıç principal eşleşsin.
+            dom = (domain or cred.domain or "").upper()
             cands = [f"{uname}@{dom}", uname, f"{dom}\\{uname}",
                      (dom.split(".")[0] + "\\" + uname if dom else uname)]
             for cand in cands:

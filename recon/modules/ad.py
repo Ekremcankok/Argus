@@ -162,16 +162,39 @@ class ADModule(Module):
         return None
 
     # ── araç kimlik argümanları ──
+    def _resolve_domain(self, ctx, dc, out_dir) -> Optional[str]:
+        """DC SMB banner'ından FQDN domaini (ör. lab.local) çıkarır.
+
+        impacket LDAP arama tabanını domain'den türetir: kısa NetBIOS adı ('lab')
+        verilirse 'DC=lab' olur → referral hatası (Kerberoast/AS-REP/delegation
+        BOŞ döner). FQDN gelmediyse DC'den gerçek domaini keşfedip düzeltiriz.
+        """
+        nxc = nxc_binary()
+        if not nxc:
+            return None
+        res = ctx.runner.run([nxc, "smb", dc], timeout=60,
+                             raw_path=out_dir / "dcinfo.txt")
+        if res.skipped:
+            return None
+        txt = re.sub(r"\x1b\[[0-9;]*m", "", res.stdout + res.stderr)
+        m = re.search(r"\(domain:([^)]+)\)", txt, re.I)
+        if m and "." in m.group(1):
+            fqdn = m.group(1).strip()
+            self.log().info("FQDN domain keşfedildi: %s", fqdn)
+            return fqdn
+        return None
+
     def _impacket_target(self, cred) -> tuple[str, list[str]]:
         kind, val = cred.secret()
-        dom = cred.domain or ""
+        dom = getattr(self, "_domain", None) or cred.domain or ""
         if kind == "hash":
             return f"{dom}/{cred.username}", ["-hashes", f":{val}"]
         return f"{dom}/{cred.username}:{val}", []
 
     def _certipy_auth(self, cred) -> list[str]:
         kind, val = cred.secret()
-        up = f"{cred.username}@{cred.domain}" if cred.domain else cred.username
+        dom = getattr(self, "_domain", None) or cred.domain
+        up = f"{cred.username}@{dom}" if dom else cred.username
         if kind == "hash":
             return ["-u", up, "-hashes", f":{val}"]
         return ["-u", up, "-p", val]
@@ -183,6 +206,12 @@ class ADModule(Module):
         dc = ctx.inventory.dc_candidates()[0]
         ctx.scope.assert_allowed(dc)
         findings: list[Finding] = []
+
+        # impacket/certipy için FQDN domain şart (kısa ad 'lab' → LDAP referral
+        # hatası, Kerberoast/AS-REP/delegation boş döner). FQDN değilse keşfet.
+        self._domain = cred.domain or ""
+        if "." not in self._domain:
+            self._domain = self._resolve_domain(ctx, dc, out_dir) or self._domain
 
         findings += self._kerberoast(ctx, dc, cred, out_dir)
         findings += self._asrep(ctx, dc, cred, out_dir)
