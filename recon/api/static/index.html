@@ -3,34 +3,46 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>İç Ağ Recon Paneli</title>
-<link rel="stylesheet" href="/static/app.css?v=3">
+<title>Recon — İç Ağ Tespit Paneli</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="/static/app.css?v=4">
 </head>
 <body>
 <div class="app">
   <aside class="sidebar">
     <div class="brand">
       <div class="logo">R</div>
-      <div><div class="t">Recon</div><div class="s">iç ağ · tespit</div></div>
+      <div class="brand-tx">
+        <div class="t">Recon<span class="brand-dot">●</span></div>
+        <div class="s">İç Ağ Tespit Platformu</div>
+      </div>
     </div>
     <nav class="nav">
-      <a href="#/scans"><span class="ic">◉</span> Taramalar <span class="cnt" id="navcnt-scans">—</span></a>
+      <a href="#/scans" data-nav="scans"><span class="ic">▤</span> <span class="lbl">Taramalar</span> <span class="cnt" id="navcnt-scans">—</span></a>
+      <a href="#/catalog" data-nav="catalog"><span class="ic">◇</span> <span class="lbl">Zafiyet Kataloğu</span></a>
     </nav>
     <div class="grow"></div>
-    <button class="btn-new" onclick="location.hash='#/new'">+ Yeni Tarama</button>
-    <div class="sb-foot">safe-by-default · localhost<br>tespit ≠ sömürü</div>
+    <button class="btn-new" onclick="location.hash='#/new'"><span>+</span> Yeni Tarama</button>
+    <div class="sb-foot">
+      <span class="sf-badge">safe-by-default</span>
+      <div class="sf-note">Tespit ≠ Sömürü · yalnız localhost</div>
+    </div>
   </aside>
 
   <main class="main">
     <div class="topbar">
-      <h1 id="ttl">Genel Bakış</h1>
-      <span id="crumb"></span>
+      <div class="tb-titles">
+        <h1 id="ttl">Taramalar</h1>
+        <span id="crumb"></span>
+      </div>
       <div class="spacer"></div>
-      <span id="statuspill" class="st st-idle" style="display:none">idle</span>
+      <span id="statuspill" class="st st-running" style="display:none">● tarama çalışıyor</span>
     </div>
     <div class="content" id="content"></div>
   </main>
 </div>
-<script src="/static/app.js?v=3"></script>
+<script src="/static/app.js?v=4"></script>
 </body>
 </html>

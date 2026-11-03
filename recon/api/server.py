@@ -198,7 +198,16 @@ class JobManager:
         self.base_config_path = base_config_path
         self.jobs: list[Job] = []
         self._thread: Optional[threading.Thread] = None
+        self.output_dir = self._resolve_output_dir()
         self._load_history()
+
+    def _resolve_output_dir(self) -> Path:
+        try:
+            if self.base_config_path.exists():
+                return Path(load_config(self.base_config_path).output_dir)
+        except Exception:
+            pass
+        return Path("output")
 
     def _load_history(self) -> None:
         """Önceki tarama çıktılarını (output/<tarih>_<id>) 'done' job olarak yükle.
@@ -207,12 +216,7 @@ class JobManager:
         (bulgular diskteki findings.jsonl'den okunur).
         """
         import re as _re
-        try:
-            out = (load_config(self.base_config_path).output_dir
-                   if self.base_config_path.exists() else Path("output"))
-        except Exception:
-            out = Path("output")
-        out = Path(out)
+        out = Path(self.output_dir)
         if not out.exists():
             return
         dirs = [d for d in out.glob("*") if d.is_dir()
@@ -352,6 +356,31 @@ class JobManager:
         if a and a.orch is not None:
             a.orch.stop()
 
+    def delete(self, job_id: str) -> dict:
+        """Taramayı listeden VE diskteki run_dir'ini (ham çıktı+DB) siler.
+
+        Çalışan tarama silinemez. Güvenlik: yalnız output_dir altındaki bir
+        dizin silinir (yanlış yol/çıkış dışı silmeye karşı).
+        """
+        job = self.get(job_id)
+        if job is None:
+            raise HTTPException(404, "tarama bulunamadı")
+        if job.status == "running":
+            raise HTTPException(409, "çalışan tarama silinemez (önce durdur)")
+        freed = False
+        if job.run_dir:
+            import shutil
+            rd = Path(job.run_dir).resolve()
+            try:
+                out = self.output_dir.resolve()
+                if (rd == out or out in rd.parents) and rd != out and rd.exists():
+                    shutil.rmtree(rd, ignore_errors=True)
+                    freed = not rd.exists()
+            except Exception:
+                pass
+        self.jobs = [j for j in self.jobs if j.id != job_id]
+        return {"ok": True, "deleted": job_id, "disk_removed": freed}
+
 
 def _dashboard(job: Optional[Job]) -> dict:
     if job is None:
@@ -428,6 +457,11 @@ def create_app(base_config_path: str | Path = "config.yaml") -> FastAPI:
     def stop():
         mgr.stop()
         return {"ok": True}
+
+    @app.delete("/api/scans/{job_id}")
+    def scan_delete(job_id: str):
+        """Taramayı ve diskteki çıktısını siler (yer açar)."""
+        return mgr.delete(job_id)
 
     # ── taramalar (geçmiş) ──
     @app.get("/api/scans")

@@ -22,6 +22,13 @@ const sevBadge = s => `<span class="sev sev-${s}">${SEV_TR[s]||s}</span>`;
 const stBadge = s => `<span class="st st-${s}">${ST_TR[s]||s}</span>`;
 function miniBars(counts){ return `<span class="minibars">`+SEV.map(s=>{const n=counts[s]||0; if(!n)return '';
   const h=Math.min(18,6+n*2); return `<i class="bg-${s}" style="height:${h}px" title="${SEV_TR[s]}: ${n}"></i>`;}).join('')+`</span>`; }
+function kpiTiles(counts){
+  const total=SEV.reduce((a,s)=>a+(counts[s]||0),0);
+  let h=`<div class="tiles" style="margin-bottom:18px">
+    <div class="tile c-accent"><div class="bar"></div><div class="n">${total}</div><div class="l">Toplam Bulgu</div></div>`;
+  for(const s of SEV) h+=`<div class="tile c-${s}"><div class="bar"></div><div class="n">${counts[s]||0}</div><div class="l">${SEV_TR[s]}</div></div>`;
+  return h+`</div>`;
+}
 
 // ── router ──
 const routes = [
@@ -30,13 +37,38 @@ const routes = [
   [/^#\/scans\/([^/]+)\/f\/(.+)$/, viewFinding],
   [/^#\/scans\/([^/]+)$/, viewScanDetail],
   [/^#\/new$/, viewNew],
+  [/^#\/catalog$/, viewCatalog],
+  [/^#\/catalog\/(.+)$/, viewCatalogEntry],
 ];
 function router(){
   const h=location.hash||'#/';
   for(const [re,fn] of routes){ const m=h.match(re); if(m){ setActiveNav(h); fn(...m.slice(1)); return; } }
   location.hash='#/scans';
 }
-function setActiveNav(h){ document.querySelectorAll('.nav a').forEach(a=>a.classList.toggle('active',h.startsWith('#/scans'))); }
+function setActiveNav(h){
+  const nav = h.startsWith('#/catalog') ? 'catalog' : 'scans';
+  document.querySelectorAll('.nav a').forEach(a=>a.classList.toggle('active', a.dataset.nav===nav));
+}
+
+// ── UI yardımcıları: toast + onay modalı + DELETE ──
+async function del(u){ const r=await fetch(u,{method:'DELETE'});
+  if(!r.ok) throw new Error((await r.json().catch(()=>({}))).detail||r.status); return r.json(); }
+function toast(msg,kind){ let t=$('#toast');
+  if(!t){ t=document.createElement('div'); t.id='toast'; document.body.appendChild(t); }
+  t.className='toast '+(kind||''); t.textContent=msg;
+  requestAnimationFrame(()=>t.classList.add('show'));
+  clearTimeout(t._h); t._h=setTimeout(()=>t.classList.remove('show'),2800); }
+function confirmModal(title,bodyHtml,okLabel){ return new Promise(res=>{
+  const bg=document.createElement('div'); bg.className='modal-bg';
+  bg.innerHTML=`<div class="modal"><h3>${esc(title)}</h3><p>${bodyHtml}</p>
+    <div class="m-foot"><button id="mc">İptal</button>
+    <button class="danger" id="mo">${esc(okLabel||'Sil')}</button></div></div>`;
+  document.body.appendChild(bg);
+  const close=v=>{ bg.remove(); res(v); };
+  bg.querySelector('#mc').onclick=()=>close(false);
+  bg.querySelector('#mo').onclick=()=>close(true);
+  bg.onclick=e=>{ if(e.target===bg) close(false); };
+}); }
 function setTop(title,crumb){ $('#ttl').textContent=title; $('#crumb').innerHTML=crumb?`<span class="crumb">${crumb}</span>`:''; }
 const C = () => $('#content');
 
@@ -45,7 +77,13 @@ async function viewScans(){
   setTop('Taramalar','');
   const scans=await get('/api/scans');
   $('#navcnt-scans').textContent=scans.length;
-  if(!scans.length){ C().innerHTML=`<div class="card"><div class="empty">Henüz tarama yok.<br><br>
+  const hero=`<div class="hero">
+      <div class="h-tx"><h2>Taramalar</h2>
+        <p>İç ağ keşif/enum/tespit koşuları. Her tarama benzersiz bir çıktı dizini tutar; bulgular önem ve güven düzeyiyle normalize edilir — sömürü operatöre bırakılır.</p></div>
+      <button class="primary" onclick="location.hash='#/new'"><span style="font-size:16px">+</span> Yeni Tarama</button>
+    </div>`;
+  if(!scans.length){ C().innerHTML=hero+`<div class="card"><div class="empty">
+    <span class="ei">▤</span>Henüz tarama yok.<br>İlk taramanı oluşturup iç ağı haritalamaya başla.<br><br>
     <button class="primary" onclick="location.hash='#/new'">+ Yeni tarama oluştur</button></div></div>`; return; }
   const actBtn=s=>{
     if(s.status==='running') return `<button class="ibtn danger" onclick="event.stopPropagation();stopScan()" title="Durdur">■</button>`;
@@ -53,19 +91,30 @@ async function viewScans(){
     const tip = s.status==='saved' ? 'Başlat' : 'Yeniden çalıştır';
     return `<button class="ibtn go" onclick="event.stopPropagation();launchScan('${s.id}')" title="${tip}">${label}</button>`;
   };
+  const delBtn=s=> s.status==='running' ? '' :
+    `<button class="ibtn danger" title="Sil" onclick="event.stopPropagation();deleteScan('${s.id}','${encodeURIComponent(s.name)}')">🗑</button>`;
   const rows=scans.map(s=>`<tr class="clk" onclick="location.hash='#/scans/${s.id}'">
-    <td><b>${esc(s.name)}</b><div class="muted mono" style="font-size:12px">${esc((s.include||[]).join(', '))}</div></td>
+    <td class="t-name"><b>${esc(s.name)}</b><div class="muted mono" style="font-size:12px;margin-top:3px">${esc((s.include||[]).join(', '))||'—'}</div></td>
     <td>${stBadge(s.status)}</td>
     <td>${s.credentialed?`<span class="chip">👤 ${esc(s.credential_principal||'kimlikli')}</span>`:'<span class="muted">anonim</span>'}</td>
     <td class="num">${s.hosts}</td><td class="num">${s.total}</td><td>${miniBars(s.severity_counts)}</td>
     <td class="muted">${s.started_at?fmtTime(s.started_at):'—'}</td>
-    <td style="text-align:right">${actBtn(s)}</td></tr>`).join('');
-  C().innerHTML=`<div class="row" style="justify-content:flex-end;margin-bottom:14px">
-      <button class="primary" onclick="location.hash='#/new'">+ Yeni Tarama</button></div>
-    <div class="card tablecard"><table>
-    <thead><tr><th>Tarama</th><th>Durum</th><th>Kimlik</th><th>Host</th><th>Bulgu</th><th>Önem</th><th>Başlangıç</th><th></th></tr></thead>
+    <td style="text-align:right;white-space:nowrap">${actBtn(s)} ${delBtn(s)}</td></tr>`).join('');
+  C().innerHTML=hero+`<div class="card tablecard"><table>
+    <thead><tr><th>Tarama</th><th>Durum</th><th>Kimlik</th><th>Host</th><th>Bulgu</th><th>Önem Dağılımı</th><th>Başlangıç</th><th></th></tr></thead>
     <tbody>${rows}</tbody></table></div>`;
 }
+window.deleteScan=async(id,nameEnc)=>{
+  const name=decodeURIComponent(nameEnc||'');
+  const ok=await confirmModal('Taramayı sil',
+    `<b>${esc(name)}</b> taraması ve diskteki tüm çıktısı (ham araç çıktıları, bulgu veritabanı, rapor) <b>kalıcı olarak</b> silinecek. Disk alanı boşalır, geri alınamaz.`,
+    'Kalıcı olarak sil');
+  if(!ok) return;
+  try{ const r=await del('/api/scans/'+id);
+    toast(r.disk_removed?'Tarama ve diskteki çıktısı silindi':'Tarama kaydı silindi','ok');
+    const h=location.hash; if(h.startsWith('#/scans/')) location.hash='#/scans'; else viewScans();
+  } catch(e){ toast('Silinemedi: '+e.message,'err'); }
+};
 
 // ── Tarama detayı (Nessus sekmeleri) ──
 let _sdTab='findings';
@@ -106,15 +155,17 @@ async function renderSdBody(id,d){
   const body=$('#sdbody'); if(!body)return;
   if(_sdTab==='findings'){
     if(d.status==='saved'){ body.innerHTML=`<div class="card"><div class="empty">
-      Tarama henüz çalıştırılmadı.<br><br>
+      <span class="ei">▶</span>Tarama henüz çalıştırılmadı.<br>Başlatınca bulgular canlı olarak burada akar.<br><br>
       <button class="primary" onclick="launchScan('${id}')">▶ Taramayı Başlat</button></div></div>`; return; }
     const f=await get('/api/findings?job_id='+id);
-    if(!f.length){ body.innerHTML=`<div class="card"><div class="empty">${d.status==='running'?'Taranıyor… bulgu bekleniyor.':'Bu taramada bulgu yok.'}</div></div>`; return; }
+    if(!f.length){ body.innerHTML=`<div class="card"><div class="empty">
+      <span class="ei">${d.status==='running'?'◴':'✓'}</span>
+      ${d.status==='running'?'Taranıyor… bulgu bekleniyor.':'Bu taramada bulgu üretilmedi (temiz yapılandırma ya da erişim yok).'}</div></div>`; return; }
     const rows=f.map(x=>`<tr class="clk" onclick="location.hash='#/scans/${id}/f/${encodeURIComponent(x.id)}'">
-      <td>${sevBadge(x.severity)}</td><td>${esc(x.title)}</td>
+      <td>${sevBadge(x.severity)}</td><td class="t-name"><b>${esc(x.title)}</b></td>
       <td class="mono">${esc(x.host)}</td><td class="mono">${x.port||''}</td>
       <td><span class="chip">${x.confidence}</span></td><td class="muted">${esc(x.source_tool||'')}</td></tr>`).join('');
-    body.innerHTML=`<div class="card tablecard"><table>
+    body.innerHTML=kpiTiles(d.severity_counts||{})+`<div class="card tablecard"><table>
       <thead><tr><th>Önem</th><th>Başlık</th><th>Host</th><th>Port</th><th>Güven</th><th>Araç</th></tr></thead>
       <tbody>${rows}</tbody></table></div>`;
   } else if(_sdTab==='hosts'){
@@ -196,6 +247,37 @@ function kbCard(e, detailAcc=''){
     </div>
     ${sec('Çözüm önerisi',e.remediation)}
     ${refs?`<div class="kb-sec"><h4>Referanslar</h4><ul style="margin:0;padding-left:18px">${refs}</ul></div>`:''}</div>`;
+}
+
+// ── Zafiyet Kataloğu (bilgi tabanı) ──
+function _sevRank(s){ const i=SEV.indexOf(s); return i<0?99:i; }
+async function viewCatalog(){
+  setTop('Zafiyet Kataloğu','');
+  if(!S.catalog.length) S.catalog=await get('/api/catalog');
+  const byFam={}; S.catalog.forEach(e=>{(byFam[e.phase]=byFam[e.phase]||[]).push(e);});
+  const fams=FAM_ORDER.filter(p=>byFam[p]).concat(Object.keys(byFam).filter(p=>!FAM_ORDER.includes(p)));
+  let html=`<div class="hero"><div class="h-tx"><h2>Zafiyet Kataloğu</h2>
+    <p>Aracın tespit ettiği her bulgu türü için bilgi tabanı: açıklama, tespit yöntemi, sömürü yolu (manuel) ve çözüm önerisi. ${S.catalog.length} kayıt.</p></div></div>`;
+  for(const p of fams){
+    const items=byFam[p].slice().sort((a,b)=>_sevRank(a.severity)-_sevRank(b.severity));
+    html+=`<div class="cat-sec-h">${FAM[p]||p} <span class="muted" style="font-weight:600">${items.length}</span></div>
+      <div class="cat-grid">`+items.map(e=>`
+        <div class="cat-card" onclick="location.hash='#/catalog/${encodeURIComponent(e.id)}'">
+          <div class="cc-h">${sevBadge(e.severity)}${e.manual_only?'<span class="chip manual">sömürü manuel</span>':''}</div>
+          <div class="cc-t">${esc(e.title)}</div>
+          <div class="cc-s">${esc(e.summary||e.description||'')}</div>
+          <div class="cc-f">${(e.cve||[]).slice(0,2).map(c=>`<span class="chip cve">${esc(c)}</span>`).join('')}
+            ${(e.tags||[]).slice(0,3).map(t=>`<span class="chip">${esc(t)}</span>`).join('')}</div>
+        </div>`).join('')+`</div>`;
+  }
+  C().innerHTML=html;
+}
+async function viewCatalogEntry(kb){
+  kb=decodeURIComponent(kb);
+  setTop('Katalog','<a href="#/catalog">Zafiyet Kataloğu</a>');
+  let e=null; try{ e=await get('/api/catalog/'+encodeURIComponent(kb)); }catch(err){}
+  if(!e){ C().innerHTML='<div class="card"><div class="empty"><span class="ei">◇</span>Katalog kaydı bulunamadı.</div></div>'; return; }
+  C().innerHTML=`<div class="backlink" onclick="location.hash='#/catalog'">← Katalog</div>`+kbCard(e);
 }
 
 // ── Yeni Tarama (sekmeli) ──
