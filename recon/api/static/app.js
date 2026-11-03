@@ -111,7 +111,7 @@ async function renderSdBody(id,d){
     const f=await get('/api/findings?job_id='+id);
     if(!f.length){ body.innerHTML=`<div class="card"><div class="empty">${d.status==='running'?'Taranıyor… bulgu bekleniyor.':'Bu taramada bulgu yok.'}</div></div>`; return; }
     const rows=f.map(x=>`<tr class="clk" onclick="location.hash='#/scans/${id}/f/${encodeURIComponent(x.id)}'">
-      <td>${sevBadge(x.severity)}</td><td>${esc(x.title)}${x.manual_followup?' <span class="chip manual">MANUEL</span>':''}</td>
+      <td>${sevBadge(x.severity)}</td><td>${esc(x.title)}</td>
       <td class="mono">${esc(x.host)}</td><td class="mono">${x.port||''}</td>
       <td><span class="chip">${x.confidence}</span></td><td class="muted">${esc(x.source_tool||'')}</td></tr>`).join('');
     body.innerHTML=`<div class="card tablecard"><table>

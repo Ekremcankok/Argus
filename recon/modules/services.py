@@ -85,7 +85,7 @@ class ServicesModule(Module):
         nxc = nxc_binary()
         if not nxc:
             return []
-        out = []
+        vuln = []
         for ip in ctx.inventory.hosts_with_port(389):
             if not ctx.scope.is_allowed(ip):
                 continue
@@ -94,15 +94,19 @@ class ServicesModule(Module):
             if res.skipped:
                 continue
             if parse_ldap_anon_users(res.stdout + res.stderr):
-                out.append(Finding(
-                    host=ip, port=389, phase=self.name, category="config",
-                    title="LDAP anonymous bind (kullanıcı numaralandırma)",
-                    severity=Severity.medium, confidence=Confidence.detected,
-                    exploitable=Exploitable.na, source_tool="netexec",
-                    kb_id="ldap-anonymous-bind",
-                    evidence_path=str((out_dir / f"{ip}_ldapanon.txt").as_posix()),
-                    notes="Kimlik doğrulamasız dizin bilgisi sızıntısı."))
-        return out
+                vuln.append(ip)
+        if not vuln:
+            return []
+        vuln = sorted(vuln)
+        # TEK konsolide bulgu (her host için ayrı bulgu üretme — ölçekte flood)
+        return [Finding(
+            host="scope", port=389, phase=self.name, category="config",
+            title=f"LDAP anonymous bind: {len(vuln)} host",
+            severity=Severity.medium, confidence=Confidence.detected,
+            exploitable=Exploitable.na, source_tool="netexec",
+            kb_id="ldap-anonymous-bind", evidence_path=str(out_dir.as_posix()),
+            notes=("Kimlik doğrulamasız dizin bilgisi sızıntısı (kullanıcı "
+                   "numaralandırma). Anonim bind açık hostlar:\n" + "\n".join(vuln)))]
 
     # ── MSSQL erişim ──
     def _mssql(self, ctx, out_dir):
@@ -154,16 +158,18 @@ class ServicesModule(Module):
                                  timeout=120, raw_path=out_dir / "snmp.txt")
             if res.skipped:
                 return []
-        out = []
-        for ip, comm in parse_snmp(res.stdout):
-            if not ctx.scope.is_allowed(ip):
-                continue
-            out.append(Finding(
-                host=ip, port=161, phase=self.name, category="config",
-                title=f"SNMP default community: {comm}",
-                severity=Severity.medium, confidence=Confidence.detected,
-                exploitable=Exploitable.na, source_tool="onesixtyone",
-                kb_id="snmp-default-community",
-                evidence_path=str((out_dir / "snmp.txt").as_posix()),
-                notes="Cihaz/config sızıntısı (snmpwalk ile detay)."))
-        return out
+        pairs = sorted((ip, comm) for ip, comm in parse_snmp(res.stdout)
+                       if ctx.scope.is_allowed(ip))
+        if not pairs:
+            return []
+        lines = [f"{ip}  [{comm}]" for ip, comm in pairs]
+        # TEK konsolide bulgu (her host için ayrı bulgu üretme — ölçekte flood)
+        return [Finding(
+            host="scope", port=161, phase=self.name, category="config",
+            title=f"SNMP default community: {len(pairs)} host",
+            severity=Severity.medium, confidence=Confidence.detected,
+            exploitable=Exploitable.na, source_tool="onesixtyone",
+            kb_id="snmp-default-community",
+            evidence_path=str((out_dir / "snmp.txt").as_posix()),
+            notes=("Cihaz/config sızıntısı (snmpwalk ile detay). "
+                   "Default community açık host [community]:\n" + "\n".join(lines)))]
