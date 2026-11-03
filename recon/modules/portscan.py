@@ -77,11 +77,16 @@ class PortScanModule(Module):
     def _scan_host(self, ctx: ModuleContext, ip: str, out_dir: Path) -> None:
         ctx.scope.assert_allowed(ip)  # belt-and-suspenders
         xml_path = out_dir / f"{ip}.xml"
-        cmd = ["nmap", "-sV", "-sC", "-n", "--top-ports", "1000",
+        # -sV (servis/sürüm → rol tespiti) yeterli. -sC (tüm varsayılan NSE)
+        # KULLANILMAZ: sınırsız/çok yavaş (ölçekte felaket, taze host'larda asılır).
+        # Derin kontroller (smb signing, vuln, vs.) ilgili modüllerde (nxc/nmap NSE).
+        # --host-timeout: yavaş host tüm taramayı bloke etmesin (ölçek güvenliği).
+        cmd = ["nmap", "-sV", "-n", "-T4", "--top-ports", "1000",
+               "--host-timeout", "180s", "--max-retries", "2",
                "-oX", str(xml_path), ip]
         if ctx.config.concurrency.rate_limit_pps:
             cmd += ["--min-rate", str(ctx.config.concurrency.rate_limit_pps)]
-        res = ctx.runner.run(cmd, timeout=600, raw_path=out_dir / f"{ip}.txt")
+        res = ctx.runner.run(cmd, timeout=240, raw_path=out_dir / f"{ip}.txt")
         if not res.skipped:
             self._parse(xml_path, ctx, ip)
 
