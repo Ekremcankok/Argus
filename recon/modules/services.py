@@ -116,7 +116,7 @@ class ServicesModule(Module):
         cred = ctx.primary_credential()
         if not nxc or cred is None:
             return []
-        out = []
+        access = []  # (ip, admin)
         for ip in ctx.inventory.hosts_with_port(1433):
             if not ctx.scope.is_allowed(ip):
                 continue
@@ -126,16 +126,24 @@ class ServicesModule(Module):
                 continue
             ok, admin = parse_mssql(res.stdout + res.stderr)
             if ok:
-                out.append(Finding(
-                    host=ip, port=1433, phase=self.name, category="cred",
-                    title=f"MSSQL erişimi{' (sysadmin!)' if admin else ''}: {cred.principal}",
-                    severity=Severity.high if admin else Severity.medium,
-                    confidence=Confidence.confirmed, exploitable=Exploitable.manual,
-                    manual_followup=True, source_tool="netexec", kb_id="mssql-access",
-                    evidence_path=str((out_dir / f"{ip}_mssql.txt").as_posix()),
-                    notes=("sysadmin → xp_cmdshell/linked-server MANUEL." if admin
-                           else "Erişim var; yetki yükseltme/linked-server MANUEL.")))
-        return out
+                access.append((ip, admin))
+        if not access:
+            return []
+        access.sort()
+        any_admin = any(a for _, a in access)
+        lines = [f"{ip}  {'(sysadmin!)' if a else '(erişim)'}" for ip, a in access]
+        # TEK konsolide bulgu (her host için ayrı bulgu üretme)
+        return [Finding(
+            host="scope", port=1433, phase=self.name, category="cred",
+            title=(f"MSSQL erişimi ({cred.principal}): {len(access)} host"
+                   + (" — sysadmin!" if any_admin else "")),
+            severity=Severity.high if any_admin else Severity.medium,
+            confidence=Confidence.confirmed, exploitable=Exploitable.manual,
+            manual_followup=True, source_tool="netexec", kb_id="mssql-access",
+            evidence_path=str(out_dir.as_posix()),
+            notes=(("sysadmin → xp_cmdshell/linked-server MANUEL. " if any_admin
+                    else "Erişim var; yetki yükseltme/linked-server MANUEL. ")
+                   + "Erişilebilen hostlar:\n" + "\n".join(lines)))]
 
     # ── SNMP default community ──
     def _snmp(self, ctx, out_dir):

@@ -174,23 +174,27 @@ class SMBModule(Module):
                     "writable-share", str((out_dir / "shares_cred.txt").as_posix()),
                     "Yazılabilir paylaşımlar (host:share):\n" + "\n".join(wl)))
 
-            # Domain kimliğiyle erişilebilir paylaşımlar → host başına BİLGİ bulgusu
+            # Domain kimliğiyle erişilebilir paylaşımlar → TEK konsolide bulgu
+            # (host başına ayrı bulgu değil; her host kendi bölümünde listelenir)
             if cred_shares and ctx.plugin_enabled("smb-shares"):
                 evc = str((out_dir / "shares_cred.txt").as_posix())
-                for ip in sorted(cred_shares):
-                    lst = cred_shares[ip]
-                    if not lst:
-                        continue
-                    lines = [f"{s}  [{p}]" for s, p in sorted(lst)]
+                hws = [ip for ip in sorted(cred_shares) if cred_shares[ip]]
+                if hws:
+                    total = sum(len(cred_shares[ip]) for ip in hws)
+                    sections = []
+                    for ip in hws:
+                        lst = sorted(cred_shares[ip])
+                        sections.append(f"{ip} ({len(lst)}):\n"
+                                        + "\n".join(f"  {s}  [{p}]" for s, p in lst))
                     findings.append(Finding(
-                        host=ip, port=445, phase=self.name, category="info",
-                        title=f"Erişilebilir SMB paylaşımları ({len(lst)}): {ip}",
+                        host="scope", port=445, phase=self.name, category="info",
+                        title=f"Erişilebilir SMB paylaşımları: {len(hws)} host ({total} paylaşım)",
                         severity=Severity.info, confidence=Confidence.confirmed,
                         exploitable=Exploitable.na, source_tool="netexec",
                         kb_id="smb-shares", evidence_path=evc,
-                        notes=(f"Host: {ip}\n"
-                               f"{cred.principal} ile erişilebilen paylaşımlar "
-                               f"(IPC$/print$ hariç):\n" + "\n".join(lines))))
+                        notes=(f"{cred.principal} ile erişilebilen paylaşımlar "
+                               "(IPC$/print$ hariç), host başına:\n\n"
+                               + "\n\n".join(sections))))
 
         log.info("%d SMB bulgusu", len(findings))
         ctx.progress(self.name, f"{len(findings)} bulgu")

@@ -13,10 +13,8 @@ from typing import Optional
 from ..findings import Finding, Severity, Confidence, Exploitable
 from ..inventory import FoundCredential
 from ..registry import register
-from ._tools import nxc_binary, nxc_auth, summarize
+from ._tools import nxc_binary, nxc_auth
 from .base import Module, ModuleContext
-
-_CAP = 30  # ölçekte tek tek yazılacak admin-host sayısı; kalanı özet
 
 _IP = re.compile(r"(\d{1,3}(?:\.\d{1,3}){3})")
 
@@ -83,23 +81,17 @@ class PostCredModule(Module):
                 name=cred.name, principal=cred.principal, source="config",
                 valid_hosts=sorted(set(admin) | set(valid))))
 
-        for ip in admin[:_CAP]:
+        # TEK konsolide bulgu (her admin host için ayrı bulgu üretme)
+        if admin:
+            al = sorted(set(admin))
             findings.append(Finding(
-                host=ip, port=445, phase=self.name, category="cred",
-                title=f"Yerel admin: {cred.principal}",
+                host="scope", port=445, phase=self.name, category="cred",
+                title=f"Yerel admin ({cred.principal}): {len(al)} host",
                 severity=Severity.high, confidence=Confidence.confirmed,
                 exploitable=Exploitable.manual, manual_followup=True,
                 source_tool="netexec", kb_id="local-admin", evidence_path=ev,
-                notes=f"{cred.principal} bu hostta yerel admin (Pwn3d!). "
-                      "Komut yürütme/secretsdump MANUEL + opt-in."))
-        if len(admin) > _CAP:
-            findings.append(Finding(
-                host="scope", phase=self.name, category="cred",
-                title=f"+{len(admin) - _CAP} hostta daha yerel admin",
-                severity=Severity.high, confidence=Confidence.confirmed,
-                exploitable=Exploitable.manual, manual_followup=True,
-                source_tool="netexec", kb_id="local-admin", evidence_path=ev,
-                notes=f"{cred.principal} geniş yerel admin: " + summarize(admin[_CAP:], 40)))
+                notes=(f"{cred.principal} şu hostlarda yerel admin (Pwn3d!). Komut "
+                       "yürütme/secretsdump MANUEL + opt-in:\n" + "\n".join(al))))
 
         if valid:
             findings.append(Finding(

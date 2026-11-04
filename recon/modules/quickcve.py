@@ -124,9 +124,9 @@ class QuickCVEModule(Module):
         ctx.progress(self.name, f"{len(findings)} bulgu")
         return findings
 
-    # ── MS17-010 (nmap NSE) ──
+    # ── MS17-010 (nmap NSE) → TEK konsolide bulgu ──
     def _ms17010(self, ctx: ModuleContext, out_dir: Path) -> list[Finding]:
-        findings = []
+        vuln = []
         for ip in ctx.inventory.hosts_with_port(445):
             ctx.scope.assert_allowed(ip)
             xmlp = out_dir / f"{ip}_ms17010.xml"
@@ -136,23 +136,26 @@ class QuickCVEModule(Module):
             if res.skipped or not xmlp.exists():
                 continue
             if parse_ms17010_vulnerable(xmlp.read_text(encoding="utf-8", errors="ignore")):
-                findings.append(Finding(
-                    host=ip, port=445, phase=self.name, category="vuln",
-                    title="MS17-010 (EternalBlue) zafiyetli",
-                    severity=Severity.critical, confidence=Confidence.detected,
-                    exploitable=Exploitable.manual, manual_followup=True,
-                    source_tool="nmap", kb_id="ms17-010",
-                    evidence_path=str((out_dir / f"{ip}_ms17010.txt").as_posix()),
-                    notes="Exploit MANUEL — BSOD riski (bkz. katalog)."))
+                vuln.append(ip)
                 self.log().warning("MS17-010 zafiyetli: %s", ip)
-        return findings
+        if not vuln:
+            return []
+        vuln = sorted(vuln)
+        return [Finding(
+            host="scope", port=445, phase=self.name, category="vuln",
+            title=f"MS17-010 (EternalBlue) zafiyetli: {len(vuln)} host",
+            severity=Severity.critical, confidence=Confidence.detected,
+            exploitable=Exploitable.manual, manual_followup=True,
+            source_tool="nmap", kb_id="ms17-010", evidence_path=str(out_dir.as_posix()),
+            notes="Exploit MANUEL — BSOD riski (bkz. katalog). Zafiyetli hostlar:\n"
+                  + "\n".join(vuln))]
 
-    # ── Zerologon (netexec, non-exploit kontrol) ──
+    # ── Zerologon (netexec, non-exploit kontrol) → TEK konsolide bulgu ──
     def _zerologon(self, ctx: ModuleContext, out_dir: Path) -> list[Finding]:
         nxc = _nxc_binary()
         if not nxc:
             return []
-        findings = []
+        vuln = []
         for ip in ctx.inventory.dc_candidates():
             ctx.scope.assert_allowed(ip)
             cmd = [nxc, "smb", ip, "-u", "", "-p", "", "-M", "zerologon"]
@@ -160,16 +163,19 @@ class QuickCVEModule(Module):
             if res.skipped:
                 continue
             if parse_nxc_vulnerable(res.stdout + res.stderr):
-                findings.append(Finding(
-                    host=ip, port=135, phase=self.name, category="vuln",
-                    title="Zerologon (CVE-2020-1472) zafiyetli",
-                    severity=Severity.critical, confidence=Confidence.detected,
-                    exploitable=Exploitable.manual, manual_followup=True,
-                    source_tool="netexec", kb_id="zerologon",
-                    evidence_path=str((out_dir / f"{ip}_zerologon.txt").as_posix()),
-                    notes="KESİNLİKLE MANUEL — exploit DC makine hesabını sıfırlar."))
+                vuln.append(ip)
                 self.log().warning("Zerologon zafiyetli: %s", ip)
-        return findings
+        if not vuln:
+            return []
+        vuln = sorted(vuln)
+        return [Finding(
+            host="scope", port=135, phase=self.name, category="vuln",
+            title=f"Zerologon (CVE-2020-1472) zafiyetli: {len(vuln)} DC",
+            severity=Severity.critical, confidence=Confidence.detected,
+            exploitable=Exploitable.manual, manual_followup=True,
+            source_tool="netexec", kb_id="zerologon", evidence_path=str(out_dir.as_posix()),
+            notes="KESİNLİKLE MANUEL — exploit DC makine hesabını sıfırlar. Zafiyetli DC'ler:\n"
+                  + "\n".join(vuln))]
 
     def _auth(self, ctx):
         from ._tools import nxc_auth
@@ -180,7 +186,7 @@ class QuickCVEModule(Module):
         nxc = _nxc_binary()
         if not nxc:
             return []
-        findings = []
+        vuln = []
         for ip in ctx.inventory.hosts_with_port(445):  # 445 kapalıysa bakma
             if not ctx.scope.is_allowed(ip):
                 continue
@@ -189,46 +195,52 @@ class QuickCVEModule(Module):
             if res.skipped:
                 continue
             if parse_nxc_vulnerable(res.stdout + res.stderr):
-                findings.append(Finding(
-                    host=ip, port=445, phase=self.name, category="vuln",
-                    title="SMBGhost (CVE-2020-0796) yüzeyi",
-                    severity=Severity.high, confidence=Confidence.probable,
-                    exploitable=Exploitable.manual, manual_followup=True,
-                    source_tool="netexec", kb_id="smbghost",
-                    evidence_path=str((out_dir / f"{ip}_smbghost.txt").as_posix()),
-                    notes=("SMB 3.1.1 + compression etkin (SMBGhost göstergesi). "
-                           "Yalnız Win10/Server 1903-1909 ve YAMASIZ ise RCE/LPE; "
-                           "yama durumu uzaktan kesinleşmez — build/KB ile teyit et.")))
+                vuln.append(ip)
                 self.log().warning("SMBGhost yüzeyi: %s", ip)
-        return findings
+        if not vuln:
+            return []
+        vuln = sorted(vuln)
+        return [Finding(
+            host="scope", port=445, phase=self.name, category="vuln",
+            title=f"SMBGhost (CVE-2020-0796) yüzeyi: {len(vuln)} host",
+            severity=Severity.high, confidence=Confidence.probable,
+            exploitable=Exploitable.manual, manual_followup=True,
+            source_tool="netexec", kb_id="smbghost", evidence_path=str(out_dir.as_posix()),
+            notes=("SMB 3.1.1 + compression etkin (SMBGhost göstergesi). Yalnız Win10/"
+                   "Server 1903-1909 ve YAMASIZ ise RCE/LPE; yama durumu uzaktan "
+                   "kesinleşmez — build/KB ile teyit et. Göstergeli hostlar:\n"
+                   + "\n".join(vuln)))]
 
     # ── Coercion yüzeyi: PetitPotam/PrinterBug/DFSCoerce → TEK bulgu (coerce_plus) ──
     def _coercion(self, ctx: ModuleContext, out_dir: Path) -> list[Finding]:
         nxc = _nxc_binary()
         if not nxc:
             return []
-        findings = []
+        hits = []  # (ip, methods)
         for ip in ctx.inventory.dc_candidates():
             ctx.scope.assert_allowed(ip)
             cmd = [nxc, "smb", ip, *self._auth(ctx), "-M", "coerce_plus"]
             res = ctx.runner.run(cmd, timeout=180, raw_path=out_dir / f"{ip}_coerce.txt")
             if res.skipped:
                 continue
-            ev = str((out_dir / f"{ip}_coerce.txt").as_posix())
             methods = sorted(parse_coercion(res.stdout + res.stderr))
             if not methods:
                 continue
-            # Hepsi aynı 'DC auth zorlama' yüzeyi → tek bulgu, yöntemleri notta listele
-            findings.append(Finding(
-                host=ip, port=135, phase=self.name, category="config",
-                title=f"DC auth zorlama (coercion) açık: {len(methods)} yöntem",
-                severity=Severity.high, confidence=Confidence.detected,
-                exploitable=Exploitable.manual, manual_followup=True,
-                source_tool="netexec", kb_id="coercion", evidence_path=ev,
-                notes=(f"Açık yöntem(ler): {', '.join(methods)}. Kimlik doğrulamasız "
-                       "DC auth zorlama → relay zinciri (ESC8/signing=false) MANUEL.")))
+            hits.append((ip, methods))
             self.log().warning("Coercion açık (%s): %s", ", ".join(methods), ip)
-        return findings
+        if not hits:
+            return []
+        # Hepsi aynı 'DC auth zorlama' yüzeyi → tek konsolide bulgu
+        lines = [f"{ip}: {', '.join(m)}" for ip, m in sorted(hits)]
+        return [Finding(
+            host="scope", port=135, phase=self.name, category="config",
+            title=f"DC auth zorlama (coercion) açık: {len(hits)} DC",
+            severity=Severity.high, confidence=Confidence.detected,
+            exploitable=Exploitable.manual, manual_followup=True,
+            source_tool="netexec", kb_id="coercion", evidence_path=str(out_dir.as_posix()),
+            notes=("Kimlik doğrulamasız DC auth zorlama → relay zinciri "
+                   "(ESC8/signing=false) MANUEL. Açık DC'ler ve yöntemler:\n"
+                   + "\n".join(lines)))]
 
     # ── Generic nxc -M <modül> zafiyet kontrolü ──
     def _nxc_vuln(self, ctx, out_dir, module, kb, title, severity, scope_desc,
@@ -238,7 +250,7 @@ class QuickCVEModule(Module):
             return []
         targets = (ctx.inventory.dc_candidates() if dc_only
                    else ctx.inventory.hosts_with_port(port or 445))
-        findings = []
+        vuln = []
         for ip in targets:
             if not ctx.scope.is_allowed(ip):
                 continue
@@ -247,12 +259,15 @@ class QuickCVEModule(Module):
             if res.skipped:
                 continue
             if parse_nxc_vulnerable(res.stdout + res.stderr):
-                findings.append(Finding(
-                    host=ip, port=port, phase=self.name, category="vuln",
-                    title=title, severity=severity, confidence=Confidence.detected,
-                    exploitable=Exploitable.manual, manual_followup=True,
-                    source_tool="netexec", kb_id=kb,
-                    evidence_path=str((out_dir / f"{ip}_{module}.txt").as_posix()),
-                    notes="Sömürü MANUEL (katalog)."))
+                vuln.append(ip)
                 self.log().warning("%s zafiyetli: %s", kb, ip)
-        return findings
+        if not vuln:
+            return []
+        vuln = sorted(vuln)
+        return [Finding(
+            host="scope", port=port, phase=self.name, category="vuln",
+            title=f"{title}: {len(vuln)} host", severity=severity,
+            confidence=Confidence.detected, exploitable=Exploitable.manual,
+            manual_followup=True, source_tool="netexec", kb_id=kb,
+            evidence_path=str(out_dir.as_posix()),
+            notes="Sömürü MANUEL (katalog). Zafiyetli hostlar:\n" + "\n".join(vuln))]

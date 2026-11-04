@@ -35,7 +35,7 @@ class ScopeConfig(BaseModel):
 
 
 class Concurrency(BaseModel):
-    max_hosts: int = Field(default=16, ge=1, le=256)
+    max_hosts: int = Field(default=50, ge=1, le=256)
     rate_limit_pps: Optional[int] = Field(default=None, ge=1)
 
 

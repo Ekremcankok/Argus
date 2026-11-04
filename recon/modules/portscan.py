@@ -29,7 +29,9 @@ _ROLE_PORTS = {
 
 # Aynı anda en fazla kaç hosta dokunulur (sert tavan). config.max_hosts bunu
 # aşamaz: 1000 IP'lik kapsamda 1000 paralel nmap açılıp sistem/ağ kilitlenmesin.
-_MAX_PARALLEL = 100
+# 50 bilinçli bir tavan: çok daha yüksek eşzamanlı bağlantı (ör. 100+) IDS/IPS
+# tetikleyip tarayan makineyi ban'latabilir. Varsayılan da 50 (config.max_hosts).
+_MAX_PARALLEL = 50
 
 # Rapora info bulgusu olarak düşecek yüksek değerli servisler
 # (başlık, önem, kb_id → zafiyet kataloğu kaydı)
