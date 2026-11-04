@@ -21,7 +21,7 @@ output_dir: ./output
 
 # ── Eşzamanlılık & hız freni (DoS/lockout riskini sınırlar)
 concurrency:
-  max_hosts: 16                 # aynı anda kaç hosta dokunulur
+  max_hosts: 50                 # aynı anda kaç hosta dokunulur (sert tavan: 50)
   rate_limit_pps: null          # nmap --min-rate benzeri; null = araç varsayılanı
 
 # ── Lockout koruması: spray/auth denemesi yapan modüller bunu okur.
