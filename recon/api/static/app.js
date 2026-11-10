@@ -5,8 +5,8 @@ const SEV_COLOR = {critical:'#ef4444',high:'#f97316',medium:'#eab308',low:'#22d3
 const CAT_TR = {vuln:'Zafiyet',config:'Yapılandırma',cred:'Kimlik Bilgisi',service:'Servis',info:'Bilgi'};
 const FAM = {discovery:'Keşif',portscan:'Port & Servis',quickcve:'Hızlı CVE',
   smb:'SMB / NetBIOS',ad:'Active Directory',kerberos:'Kerberos',
-  poison:'Ağ Zehirleme / Relay',postcred:'Kimlikli Post-Enum'};
-const FAM_ORDER = ['discovery','portscan','quickcve','smb','ad','kerberos','postcred','poison'];
+  poison:'Ağ Zehirleme / Relay'};
+const FAM_ORDER = ['discovery','portscan','quickcve','smb','ad','kerberos','poison'];
 const BASE_MODULES = ['discovery','portscan','report']; // temel keşif + her koşuda rapor
 
 const S = { modules:[], builtNames:new Set(), catalog:[], status:'idle', activeJob:null };
@@ -276,7 +276,8 @@ window.newTab=(t)=>{ saveSettings(); _newTab=t; renderNewBody(); };
 function saveSettings(){ // sekme değişince form değerlerini sakla
   const g=id=>{const e=$('#'+id);return e?e.value:undefined;};
   const chk=id=>{const e=$('#'+id);return e?e.checked:undefined;};
-  if($('#inc')!==null){ window._f={inc:g('inc'),exc:g('exc'),nm:g('nm'),desc:g('desc'),dry:chk('dry')}; }
+  if($('#inc')!==null){ window._f={inc:g('inc'),exc:g('exc'),nm:g('nm'),desc:g('desc'),dry:chk('dry'),
+    mh:g('mh'),mp:g('mp'),rl:g('rl')}; }
   if($('#cu')!==null){ window._c={dom:g('cdom'),user:g('cu'),pw:g('cpw'),hash:g('chash')}; _cred=chk('credon'); }
 }
 function renderNewBody(){
@@ -292,7 +293,32 @@ function renderNewBody(){
       <textarea id="inc" class="mono" rows="3" placeholder="192.168.1.0/24">${esc(f.inc!==undefined?f.inc:(d.include||[]).join('\n'))}</textarea>
       <label class="fld">Hariç — exclude (her zaman kazanır)</label>
       <textarea id="exc" class="mono" rows="2" placeholder="192.168.1.1&#10;192.168.1.30">${esc(f.exc!==undefined?f.exc:(d.exclude||[]).join('\n'))}</textarea>
-      <label class="fld" style="margin-top:14px"><input type="checkbox" id="dry" ${f.dry?'checked':''}> Dry-run (komutları yaz, çalıştırma)</label>`;
+      <label class="fld" style="margin-top:14px"><input type="checkbox" id="dry" ${f.dry?'checked':''}> Dry-run (komutları yaz, çalıştırma)</label>
+
+      <div class="perf-sec">
+        <div class="perf-h">⚙ Performans / Eşzamanlılık</div>
+        <div class="muted" style="margin:2px 0 12px;font-size:13px">
+          Düşük değerler aracı/Kali'yi yormaz (yavaş ağ veya zayıf VM için önerilir).
+          Yüksek değerler daha hızlı ama CPU/ağ yükü ve çökme riski artar.</div>
+        <div class="row">
+          <div style="flex:1;min-width:150px">
+            <label class="fld">Paralel host taraması</label>
+            <input id="mh" type="number" min="1" max="256" placeholder="8"
+              value="${f.mh!==undefined?esc(f.mh):(d.max_hosts!=null?d.max_hosts:'')}">
+            <div class="muted" style="font-size:12px;margin-top:3px">Aynı anda taranan host (port tarama fan-out).</div>
+          </div>
+          <div style="flex:1;min-width:150px">
+            <label class="fld">Paralel komut / subprocess</label>
+            <input id="mp" type="number" min="1" max="64" placeholder="8"
+              value="${f.mp!==undefined?esc(f.mp):(d.max_procs!=null?d.max_procs:'')}">
+            <div class="muted" style="font-size:12px;margin-top:3px">Aynı anda açık toplam araç süreci (global tavan).</div>
+          </div>
+        </div>
+        <label class="fld">Paket hızı — nmap --min-rate (opsiyonel)</label>
+        <input id="rl" type="number" min="1" max="100000" placeholder="boş = araç varsayılanı"
+          value="${f.rl!==undefined?esc(f.rl):(d.rate_limit_pps!=null?d.rate_limit_pps:'')}">
+        <div class="muted" style="font-size:12px;margin-top:3px">Boş bırakılırsa nmap kendi hızını kullanır. Düşük değer = daha yavaş/sessiz.</div>
+      </div>`;
   } else if(_newTab==='creds'){
     body.innerHTML=`
       <div class="seg">
@@ -373,8 +399,10 @@ async function saveScan(){
   // seçili pluginlerden modülleri türet (temel keşif her zaman)
   const selPhases=new Set(S.catalog.filter(e=>_pluginSel.has(e.id)).map(e=>e.phase));
   const modules=[...new Set([...BASE_MODULES, ...[...selPhases].filter(p=>S.builtNames.has(p))])];
+  const numOrNull=v=>{ const n=parseInt(v,10); return Number.isFinite(n)?n:null; };
   const body={name:f.nm||null, description:f.desc||null, include, exclude,
-    modules, plugins:[..._pluginSel], dry_run:!!f.dry};
+    modules, plugins:[..._pluginSel], dry_run:!!f.dry,
+    max_hosts:numOrNull(f.mh), max_procs:numOrNull(f.mp), rate_limit_pps:numOrNull(f.rl)};
   if(_cred && c.user){ body.credential={domain:c.dom||null, username:c.user, password:c.pw||null, ntlm_hash:c.hash||null}; }
   try{ await post('/api/scans',body); resetNew(); location.hash='#/scans'; }
   catch(e){ alert('Kaydedilemedi: '+e.message); }

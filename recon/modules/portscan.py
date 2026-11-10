@@ -28,10 +28,12 @@ _ROLE_PORTS = {
 }
 
 # Aynı anda en fazla kaç hosta dokunulur (sert tavan). config.max_hosts bunu
-# aşamaz: 1000 IP'lik kapsamda 1000 paralel nmap açılıp sistem/ağ kilitlenmesin.
-# 50 bilinçli bir tavan: çok daha yüksek eşzamanlı bağlantı (ör. 100+) IDS/IPS
-# tetikleyip tarayan makineyi ban'latabilir. Varsayılan da 50 (config.max_hosts).
-_MAX_PARALLEL = 50
+# aşamaz: 500-1000 IP'lik kapsamda yüzlerce paralel nmap açılıp sistem/ağ
+# kilitlenmesin (zayıf bir Kali VM'i bu yüzden çöker). Düşük bir sert tavan +
+# düşük varsayılan (config.max_hosts=8) güvenli taban; panelden artırılabilir.
+# Ayrıca Runner'daki global subprocess semaforu (config.max_procs) toplam açık
+# süreç sayısını ayrıca sınırlar (ikinci güvenlik katmanı).
+_MAX_PARALLEL = 16
 
 # Rapora info bulgusu olarak düşecek yüksek değerli servisler
 # (başlık, önem, kb_id → zafiyet kataloğu kaydı)

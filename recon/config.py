@@ -35,7 +35,15 @@ class ScopeConfig(BaseModel):
 
 
 class Concurrency(BaseModel):
-    max_hosts: int = Field(default=50, ge=1, le=256)
+    # Aynı anda PARALEL taranan host sayısı (portscan fan-out). Düşük tutulur:
+    # zayıf bir Kali VM'inde 500 IP'de yüksek değer sistemi kilitler/çökertir.
+    max_hosts: int = Field(default=8, ge=1, le=256)
+    # GLOBAL eşzamanlı subprocess (açık komut satırı/araç süreci) tavanı. Tüm
+    # modüller + portscan thread'leri bu tek semaforu paylaşır → aynı anda en
+    # fazla bu kadar harici süreç (nmap/nxc/impacket...) çalışır. Araç bazlı
+    # flood ve "çok fazla cmd açılması" kaynaklı çökmeyi engeller.
+    max_procs: int = Field(default=8, ge=1, le=64)
+    # nmap paket hızı freni (--min-rate). null = araç varsayılanı.
     rate_limit_pps: Optional[int] = Field(default=None, ge=1)
 
 

@@ -110,7 +110,7 @@ class ModuleContext:
                 evidence_path=str((self.output_dir / "_credcheck" / "credcheck.txt").as_posix()),
                 notes=("Verilen domain/kullanıcı/parola ile SMB kimlik doğrulaması "
                        "REDDEDİLDİ. Hesabı KİLİTLEMEMEK için yalnız 1 deneme yapıldı; "
-                       "kimlikli kontroller (AD, BloodHound, paylaşım, post-enum) "
+                       "kimlikli kontroller (AD, BloodHound, paylaşım) "
                        "ATLANDI. Bilgileri düzeltip taramayı tekrar çalıştırın."))])
         except Exception:
             pass

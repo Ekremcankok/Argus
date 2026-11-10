@@ -52,7 +52,8 @@ class Orchestrator:
         self.run_dir.mkdir(parents=True, exist_ok=True)
 
         self.scope = ScopeGuard(config.scope)
-        self.runner = Runner(self.run_dir / "audit.log", dry_run=dry_run)
+        self.runner = Runner(self.run_dir / "audit.log", dry_run=dry_run,
+                             max_procs=config.concurrency.max_procs)
         self.store = FindingStore(self.run_dir / "findings.sqlite")
         self.inventory = Inventory()
         self.state = RunState(self.run_dir / "state.json")

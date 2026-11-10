@@ -13,8 +13,8 @@ _aday_ bulgudur; doğrulama ve sömürü kararı operatöre aittir.
 ## Öne çıkanlar
 
 - **Uçtan uca pipeline** — canlı host keşfi → port/servis → servis-bazlı enum → hızlı CVE
-  tespiti → SMB → Active Directory (Kerberoast, AS-REP, ADCS ESC1–17, delegation, GPP) →
-  BloodHound ACL/DCSync + saldırı yolu analizi → relay/coercion yüzeyi → kimlikli post-enum.
+  tespiti → SMB → Active Directory (Kerberoast, AS-REP, ADCS ESC1–17, delegation, GPP, LAPS/gMSA) →
+  BloodHound ACL/DCSync + saldırı yolu analizi → relay/coercion yüzeyi.
 - **Kimlikli ve anonim tarama** — domain kullanıcısıyla derin AD numaralandırma ya da
   yalnız ağ seviyesinde tespit. Parola düz metin tutulmaz; bellekte kalır, loglarda maskelenir.
 - **Web paneli** — tarama oluştur/başlat, canlı ilerleme, host envanteri, önem dağılımı,

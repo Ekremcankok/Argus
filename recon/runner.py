@@ -8,6 +8,7 @@ from __future__ import annotations
 import logging
 import shutil
 import subprocess
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -33,10 +34,15 @@ class RunResult:
 
 
 class Runner:
-    def __init__(self, audit_log: Path, dry_run: bool = False):
+    def __init__(self, audit_log: Path, dry_run: bool = False, max_procs: int = 8):
         self._audit = audit_log
         self._dry_run = dry_run
         self._audit.parent.mkdir(parents=True, exist_ok=True)
+        # GLOBAL eşzamanlı subprocess tavanı. Tüm modüller ve portscan'in host
+        # thread'leri bu tek semaforu paylaşır → aynı anda en fazla `max_procs`
+        # harici süreç (nmap/nxc/impacket...) çalışır. Böylece 500 IP'lik bir
+        # taramada bile açık komut sayısı sabit kalır (Kali çökmesin).
+        self._proc_sem = threading.BoundedSemaphore(max(1, int(max_procs)))
 
     @staticmethod
     def tool_available(tool: str) -> bool:
@@ -67,13 +73,15 @@ class Runner:
                              reason=f"araç yok: {tool}")
 
         try:
-            proc = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-                input=input_text,
-            )
+            # Global subprocess tavanı: semafor boşalana kadar bekle, sonra çalıştır.
+            with self._proc_sem:
+                proc = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout,
+                    input=input_text,
+                )
             rc, out, err = proc.returncode, proc.stdout, proc.stderr
         except subprocess.TimeoutExpired as e:
             dur = time.time() - start

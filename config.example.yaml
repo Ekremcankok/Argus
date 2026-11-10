@@ -19,9 +19,12 @@ mode: safe
 # ── Çıktı kök dizini (ham çıktı + finding DB + loglar buraya)
 output_dir: ./output
 
-# ── Eşzamanlılık & hız freni (DoS/lockout riskini sınırlar)
+# ── Eşzamanlılık & hız freni (DoS/lockout + yerel kaynak çökmesi riskini sınırlar)
+#    Düşük varsayılanlar bilinçli: 500+ IP'lik taramada zayıf bir Kali VM'i
+#    yüksek paralellikte çöker. Panelden (Yeni Tarama → Ayarlar) ayarlanabilir.
 concurrency:
-  max_hosts: 50                 # aynı anda kaç hosta dokunulur (sert tavan: 50)
+  max_hosts: 8                  # aynı anda PARALEL taranan host (portscan fan-out)
+  max_procs: 8                  # GLOBAL eşzamanlı subprocess tavanı (aynı anda açık toplam araç süreci)
   rate_limit_pps: null          # nmap --min-rate benzeri; null = araç varsayılanı
 
 # ── Lockout koruması: spray/auth denemesi yapan modüller bunu okur.
