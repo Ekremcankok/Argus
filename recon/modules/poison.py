@@ -20,15 +20,24 @@ _IP = re.compile(r"(\d{1,3}(?:\.\d{1,3}){3})")
 
 
 def parse_webdav(output: str) -> list[str]:
-    """nxc -M webdav çıktısından WebClient(WebDAV) etkin host IP'leri."""
+    """nxc -M webdav çıktısından WebClient(WebDAV) etkin host IP'leri.
+
+    nxc WebClient'i etkin bulduğu hostları vurgular; satır tipik olarak
+    'WEBDAV  <ip>  445  <host>  WebClient Service enabled on: <ip>' biçiminde.
+    ANSI renk kodları temizlenir; yalnız POZİTİF (enabled/running/true) satırlar
+    alınır → 'not enabled/disabled' satırları elenir (yanlış pozitif yok)."""
+    clean = re.sub(r"\x1b\[[0-9;]*m", "", output or "")
     out = []
-    for line in output.splitlines():
+    for line in clean.splitlines():
         low = line.lower()
-        if "webdav" in low or "webclient" in low:
-            if "enabl" in low or "running" in low or "[+]" in line:
-                m = _IP.search(line)
-                if m and m.group(1) not in out:
-                    out.append(m.group(1))
+        if "webdav" not in low and "webclient" not in low:
+            continue
+        if "not enabled" in low or "disabled" in low:
+            continue
+        if "enabl" in low or "running" in low or "true" in low or "[+]" in line:
+            m = _IP.search(line)
+            if m and m.group(1) not in out:
+                out.append(m.group(1))
     return out
 
 

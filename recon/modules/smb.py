@@ -61,12 +61,17 @@ def parse_shares(output: str) -> dict[str, list[tuple[str, str]]]:
 
 
 def parse_ntlm_reflection(output: str) -> list[str]:
-    """nxc -M ntlm_reflection çıktısından zafiyetli host IP'leri."""
+    """nxc -M ntlm_reflection çıktısından zafiyetli host IP'leri.
+
+    ANSI temizlenir. Pozitif işaret 'VULNERABLE' VEYA '[+]' ile birlikte
+    'REFLECT' geçen satır; 'NOT VULNERABLE' / 'patched' elenir (yanlış pozitif yok)."""
     clean = re.sub(r"\x1b\[[0-9;]*m", "", output or "")
     out = []
     for line in clean.splitlines():
         up = line.upper()
-        if "VULNERABLE" in up and "NOT VULNERABLE" not in up:
+        if "NOT VULNERABLE" in up or "PATCHED" in up:
+            continue
+        if "VULNERABLE" in up or ("[+]" in line and "REFLECT" in up):
             m = _RE_LINE_IP.search(line)
             if m and m.group(1) not in out:
                 out.append(m.group(1))

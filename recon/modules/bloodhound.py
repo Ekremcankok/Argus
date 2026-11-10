@@ -13,7 +13,7 @@ from typing import Optional
 
 from ..findings import Finding, Severity, Confidence, Exploitable
 from ..registry import register
-from ._tools import which_any, summarize
+from ._tools import which_any
 from .base import Module, ModuleContext
 
 _ACL_CAP = 30  # rapora tek tek yazılacak ACL sayısı; kalanı özet (ölçek)
@@ -98,7 +98,8 @@ def analyze_bloodhound(objs: dict[str, list[dict]]) -> dict:
     for otype in ("users", "groups", "computers", "gpos", "ous"):
         for o in objs.get(otype, []):
             props = o.get("Properties") or {}
-            target = props.get("name") or o.get("ObjectIdentifier", "?")
+            target_sid = o.get("ObjectIdentifier", "?")
+            target = props.get("name") or target_sid
             for ace in o.get("Aces", []) or []:
                 if ace.get("IsInherited"):
                     continue
@@ -115,10 +116,11 @@ def analyze_bloodhound(objs: dict[str, list[dict]]) -> dict:
                         seen_shadow.add(key)
                         result["shadow"].append((principal, target))
                 elif rn in _DANGEROUS:
-                    key = (principal, rn, target)
+                    key = (sid, rn, target_sid)
                     if key not in seen_acl:
                         seen_acl.add(key)
-                        result["acls"].append((principal, rn, target))
+                        # (principal_adı, principal_sid, hak, hedef_adı, hedef_sid)
+                        result["acls"].append((principal, sid, rn, target, target_sid))
     # Ham sınır (özet için yeterli; rapora yazım _ACL_CAP ile ayrıca sınırlanır)
     result["acls"] = result["acls"][:200]
     return result
@@ -336,25 +338,26 @@ class BloodHoundModule(Module):
                     notes="Replikasyon hakkı → tüm hash'ler (secretsdump MANUEL)."))
 
         if ctx.plugin_enabled("acl-abuse"):
-            acls = analysis["acls"]
-            for principal, right, target in acls[:_ACL_CAP]:
+            acls = analysis["acls"]   # (principal, p_sid, right, target, t_sid)
+            if acls:
+                # İsim VE SID birlikte: "Ad [SID]" (ad çözülemediyse yalnız SID).
+                def _ns(name, sid):
+                    return f"{name} [{sid}]" if name and name != sid else (sid or name or "?")
+                lines = [f"{_ns(p, ps)} --{r}--> {_ns(t, ts)}"
+                         for p, ps, r, t, ts in acls[:_ACL_CAP]]
+                extra = len(acls) - _ACL_CAP
+                if extra > 0:
+                    lines.append(f"... (+{extra} tehlikeli ACL daha — BloodHound GUI'de incele)")
+                # TEK konsolide bulgu (her ACL için ayrı bulgu değil).
                 findings.append(Finding(
                     host=dc, phase=self.name, category="config",
-                    title=f"Tehlikeli ACL: {principal} --{right}--> {target}",
+                    title=f"Tehlikeli ACL: {len(acls)} adet",
                     severity=Severity.high, confidence=Confidence.detected,
                     exploitable=Exploitable.manual, manual_followup=True,
                     source_tool="bloodhound-python", kb_id="acl-abuse",
                     evidence_path=ev,
-                    notes=f"{principal} nesnesi {target} üzerinde {right} (yetki yükseltme yolu)."))
-            if len(acls) > _ACL_CAP:
-                extra = [f"{p}--{r}-->{t}" for p, r, t in acls[_ACL_CAP:]]
-                findings.append(Finding(
-                    host=dc, phase=self.name, category="config",
-                    title=f"+{len(extra)} tehlikeli ACL daha (BloodHound'da incele)",
-                    severity=Severity.high, confidence=Confidence.detected,
-                    exploitable=Exploitable.manual, manual_followup=True,
-                    source_tool="bloodhound-python", kb_id="acl-abuse", evidence_path=ev,
-                    notes=summarize(extra, 30)))
+                    notes=("Yetki yükseltme yolları — principal [SID] --hak--> hedef [SID]:\n"
+                           + "\n".join(lines))))
 
         if ctx.plugin_enabled("shadow-credentials"):
             for principal, target in analysis["shadow"]:

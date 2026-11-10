@@ -22,17 +22,25 @@ _CAP = 40
 _RE_ASREP = re.compile(r"\$krb5asrep\$\d+\$([^@\s:]+)", re.I)
 _RE_ESC = re.compile(r"\bESC(\d{1,2})\b")
 _RE_MAQ = re.compile(r"MachineAccountQuota[:\s]+(\d+)", re.I)
-# GetUserSPNs tablo satırı: SPN (içinde '/') + hesap adı
-_RE_SPN = re.compile(r"^(\S+/\S+)\s+(\S+)\s", re.M)
+# GetUserSPNs -request çıktısındaki GERÇEK TGS hash'i (hashcat formatı):
+#   $krb5tgs$23$*hesap$REALM$spn*$checksum$edata...
+# Hesap ve SPN doğrudan hash'ten alınır → yalnız bileti ALINABİLEN (gerçekten
+# roast edilebilen) hesaplar sayılır. Ticket isteği KDC_ERR_ETYPE_NOSUPP vb.
+# ile başarısız olan hesaplar için hash üretilmez → otomatik elenir.
+_RE_KRB5TGS = re.compile(r"\$krb5tgs\$\d+\$\*([^$*]+)\$[^$]*\$([^*]+)\*", re.I)
 
 
 def parse_kerberoast(output: str) -> list[tuple[str, str]]:
-    """GetUserSPNs çıktısından (spn, hesap) çiftleri."""
-    out = []
-    for spn, acct in _RE_SPN.findall(output):
-        if spn.lower().startswith(("servicePrincipalName", "----")):
+    """GetUserSPNs -request çıktısından (spn, hesap) — yalnız GERÇEK $krb5tgs$
+    hash'i üretilen (bileti alınabilen) hesaplar. Tabloda görünüp ticket isteği
+    hata veren (ör. KDC_ERR_ETYPE_NOSUPP) hesaplar listelenmez (yanlış pozitif yok)."""
+    out, seen = [], set()
+    for acct, spn in _RE_KRB5TGS.findall(output):
+        acct = acct.strip()
+        if acct in seen:
             continue
-        out.append((spn, acct))
+        seen.add(acct)
+        out.append((spn.strip(), acct))
     return out
 
 
@@ -235,7 +243,10 @@ class ADModule(Module):
         if not tool:
             return []
         target, extra = self._impacket_target(cred)
-        res = ctx.runner.run([tool, target, "-dc-ip", dc, *extra],
+        # -request: SPN hesapları için TGS bileti iste (hashcat formatı). Bulgu
+        # yalnız GERÇEKTEN hash alınan hesaplar için üretilir (yanlış pozitif yok).
+        res = ctx.runner.run([tool, target, "-dc-ip", dc, "-request",
+                              "-format", "hashcat", *extra],
                              timeout=180, raw_path=out_dir / "kerberoast.txt")
         if res.skipped:
             return []
@@ -419,32 +430,43 @@ class ADModule(Module):
         if res.skipped:
             return []
         ev = str((out_dir / "delegation.txt").as_posix())
-        out = []
+        # Hesapları türüne göre topla → her tür İÇİN TEK konsolide bulgu
+        # (her hesap için ayrı bulgu değil).
+        unc: list[str] = []                       # unconstrained hesaplar
+        con: list[tuple[str, str, str]] = []      # (hesap, tip, hedef)
         for acct, dtype, rights in parse_delegation(res.stdout + res.stderr):
             if "unconstrained" in dtype.lower():
-                if not ctx.plugin_enabled("unconstrained-delegation"):
-                    continue
-                note = "Bilet hırsızlığı — coercion ile DC TGT (manuel)."
-                if acct.endswith("$"):
-                    note = "Makine hesabı — DC ise beklenen, member server ise kritik. " + note
-                out.append(Finding(
-                    host=dc, phase=self.name, category="config",
-                    title=f"Unconstrained delegation: {acct}",
-                    severity=Severity.high, confidence=Confidence.detected,
-                    exploitable=Exploitable.manual, manual_followup=True,
-                    source_tool="impacket", kb_id="unconstrained-delegation",
-                    evidence_path=ev, notes=note))
-            else:  # Constrained / Resource-Based
-                if not ctx.plugin_enabled("constrained-delegation"):
-                    continue
-                out.append(Finding(
-                    host=dc, phase=self.name, category="config",
-                    title=f"Constrained delegation: {acct}",
-                    severity=Severity.high, confidence=Confidence.detected,
-                    exploitable=Exploitable.manual, manual_followup=True,
-                    source_tool="impacket", kb_id="constrained-delegation",
-                    evidence_path=ev,
-                    notes=f"{dtype} → {rights}. S4U ile hedef bilet (manuel)."))
+                unc.append(acct)
+            else:
+                con.append((acct, dtype, rights))
+        out = []
+        if unc and ctx.plugin_enabled("unconstrained-delegation"):
+            unc = sorted(set(unc))
+            lines = []
+            for a in unc:
+                lines.append(f"{a}  (makine hesabı — DC ise beklenen, üye sunucu ise kritik)"
+                             if a.endswith("$") else a)
+            out.append(Finding(
+                host=dc, phase=self.name, category="config",
+                title=f"Unconstrained delegation: {len(unc)} hesap",
+                severity=Severity.high, confidence=Confidence.detected,
+                exploitable=Exploitable.manual, manual_followup=True,
+                source_tool="impacket", kb_id="unconstrained-delegation",
+                evidence_path=ev,
+                notes=("Bilet hırsızlığı — coercion ile DC TGT (manuel). "
+                       "Etkilenen hesaplar:\n" + "\n".join(lines))))
+        if con and ctx.plugin_enabled("constrained-delegation"):
+            con = sorted(set(con))
+            lines = [f"{a}  [{d}] → {r}" for a, d, r in con]
+            out.append(Finding(
+                host=dc, phase=self.name, category="config",
+                title=f"Constrained delegation: {len(con)} hesap",
+                severity=Severity.high, confidence=Confidence.detected,
+                exploitable=Exploitable.manual, manual_followup=True,
+                source_tool="impacket", kb_id="constrained-delegation",
+                evidence_path=ev,
+                notes=("S4U ile hedef bilet (manuel). Hesap [tip] → yetkili hedef:\n"
+                       + "\n".join(lines))))
         return out
 
     # ── description alanında parola (nxc get-desc-users) ──
@@ -515,16 +537,22 @@ class ADModule(Module):
                              timeout=120, raw_path=out_dir / "gmsa.txt")
         if res.skipped:
             return []
-        txt = res.stdout + res.stderr
-        # Okunabilir gMSA: nxc 'Account:' + 'NTLM:' gösterir
-        if re.search(r"Account:\s*\S+.*NTLM:", txt, re.I | re.S) \
-                or re.search(r"gMSA.*NTLM:\s*[0-9a-f]{32}", txt, re.I):
+        txt = re.sub(r"\x1b\[[0-9;]*m", "", res.stdout + res.stderr)
+        # Okunabilir gMSA = GERÇEK NTLM hash'i (32 hex) OKUNAN hesap. nxc, okuma
+        # yetkisi OLMAYAN hesapları da listeler ama 'NTLM: <no read permissions>'
+        # yazar → bunlar bulgu DEĞİL. Yalnız '<hesap>$  NTLM: <32hex>' sayılır.
+        readable = []
+        for m in re.finditer(r"(\S+\$)\s+NTLM:\s*([0-9a-fA-F]{32})\b", txt):
+            if m.group(1) not in readable:
+                readable.append(m.group(1))
+        if readable:
             return [Finding(
                 host=dc, phase=self.name, category="config",
-                title="gMSA parolası okunabilir (geniş yetki)",
+                title=f"gMSA parolası okunabilir (geniş yetki): {len(readable)} hesap",
                 severity=Severity.high, confidence=Confidence.detected,
                 exploitable=Exploitable.manual, manual_followup=True,
                 source_tool="netexec", kb_id="gmsa-readable",
                 evidence_path=str((out_dir / "gmsa.txt").as_posix()),
-                notes="Servis hesabı ele geçirme yüzeyi.")]
+                notes=("Servis hesabı ele geçirme yüzeyi — NTLM hash'i okunabilen "
+                       "gMSA hesapları:\n" + "\n".join(sorted(readable))))]
         return []
