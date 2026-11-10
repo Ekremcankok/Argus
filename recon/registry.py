@@ -39,6 +39,10 @@ def module_metadata() -> list[dict]:
             "description": m.description,
             "intrusive": m.intrusive,
             "default_enabled": m.default_enabled,
+            # Bu modülün GERÇEKTEN çalıştırdığı kb_id'ler (plugin sahipliği). Panel,
+            # hangi modülü açacağını buradan belirler — katalog 'phase'inden DEĞİL
+            # (phase yalnız UI gruplama içindir ve çalıştıran modülle uyuşmayabilir).
+            "plugins": sorted(getattr(m, "PLUGINS", set()) or set()),
         }
         for m in all_modules()
     ]

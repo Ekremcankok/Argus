@@ -396,9 +396,12 @@ async function saveScan(){
   const include=(f.inc||'').split('\n').map(s=>s.trim()).filter(Boolean);
   const exclude=(f.exc||'').split('\n').map(s=>s.trim()).filter(Boolean);
   if(!include.length){ alert('Ayarlar sekmesinde en az bir hedef (include) gir.'); _newTab='settings'; renderNewBody(); return; }
-  // seçili pluginlerden modülleri türet (temel keşif her zaman)
-  const selPhases=new Set(S.catalog.filter(e=>_pluginSel.has(e.id)).map(e=>e.phase));
-  const modules=[...new Set([...BASE_MODULES, ...[...selPhases].filter(p=>S.builtNames.has(p))])];
+  // Seçili plugin'lerden modülleri türet: bir modül, SAHİP OLDUĞU (onu gerçekten
+  // çalıştıran) kb_id'lerden en az biri seçiliyse etkinleşir. phase'e göre DEĞİL —
+  // böylece webdav (poison), ldap-anon/snmp (services), kerberoast (ad) gibi
+  // fazı farklı modülde duran kontroller de doğru modülü açar. Temel keşif her zaman.
+  const modules=[...new Set([...BASE_MODULES,
+    ...S.modules.filter(m=>(m.plugins||[]).some(kb=>_pluginSel.has(kb))).map(m=>m.name)])];
   const numOrNull=v=>{ const n=parseInt(v,10); return Number.isFinite(n)?n:null; };
   const body={name:f.nm||null, description:f.desc||null, include, exclude,
     modules, plugins:[..._pluginSel], dry_run:!!f.dry,
