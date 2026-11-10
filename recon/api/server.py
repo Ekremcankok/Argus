@@ -47,6 +47,7 @@ class ScanRequest(BaseModel):
     plugins: Optional[list[str]] = None        # seçili kb_id'ler (Nessus plugin)
     credential: Optional[CredentialInput] = None
     dry_run: bool = False
+    dc: Optional[str] = None                    # operatör DC IP'si (opsiyonel; port tespiti tutarsızsa garanti)
     # ── Performans / eşzamanlılık (panelden ayarlanır; None = config varsayılanı)
     max_hosts: Optional[int] = None            # paralel taranan host sayısı
     max_procs: Optional[int] = None            # global eşzamanlı subprocess tavanı
@@ -282,6 +283,15 @@ class JobManager:
             cfg.concurrency.max_procs = mp
         if req.rate_limit_pps is not None:
             cfg.concurrency.rate_limit_pps = _clamp(req.rate_limit_pps, 1, 100000)
+        # Operatör DC IP'si (opsiyonel). Geçerli bir IP ise config.dc'yi ezer →
+        # port tespiti tutarsız olsa bile DC adayı garanti (deterministik).
+        if req.dc and req.dc.strip():
+            import ipaddress as _ip
+            try:
+                _ip.ip_address(req.dc.strip())
+                cfg.dc = req.dc.strip()
+            except ValueError:
+                raise HTTPException(400, f"geçersiz DC IP: {req.dc}")
         # Kimlik bilgileri UI'dan gelir (kimlikli ya da anonim). Boşsa anonim.
         from ..config import Credential
         if req.credential and req.credential.username:
@@ -460,10 +470,12 @@ def create_app(base_config_path: str | Path = "config.yaml") -> FastAPI:
             cc = cfg.concurrency
             return {"include": cfg.scope.include, "exclude": cfg.scope.exclude,
                     "mode": cfg.mode.value, "has_credentials": len(cfg.credentials) > 0,
+                    "dc": cfg.dc,
                     "max_hosts": cc.max_hosts, "max_procs": cc.max_procs,
                     "rate_limit_pps": cc.rate_limit_pps}
         cc = Concurrency()
         return {"include": [], "exclude": [], "mode": "safe", "has_credentials": False,
+                "dc": None,
                 "max_hosts": cc.max_hosts, "max_procs": cc.max_procs,
                 "rate_limit_pps": cc.rate_limit_pps}
 

@@ -277,7 +277,7 @@ function saveSettings(){ // sekme değişince form değerlerini sakla
   const g=id=>{const e=$('#'+id);return e?e.value:undefined;};
   const chk=id=>{const e=$('#'+id);return e?e.checked:undefined;};
   if($('#inc')!==null){ window._f={inc:g('inc'),exc:g('exc'),nm:g('nm'),desc:g('desc'),dry:chk('dry'),
-    mh:g('mh'),mp:g('mp'),rl:g('rl')}; }
+    dc:g('dc'),mh:g('mh'),mp:g('mp'),rl:g('rl')}; }
   if($('#cu')!==null){ window._c={dom:g('cdom'),user:g('cu'),pw:g('cpw'),hash:g('chash')}; _cred=chk('credon'); }
 }
 function renderNewBody(){
@@ -293,6 +293,9 @@ function renderNewBody(){
       <textarea id="inc" class="mono" rows="3" placeholder="192.168.1.0/24">${esc(f.inc!==undefined?f.inc:(d.include||[]).join('\n'))}</textarea>
       <label class="fld">Hariç — exclude (her zaman kazanır)</label>
       <textarea id="exc" class="mono" rows="2" placeholder="192.168.1.1&#10;192.168.1.30">${esc(f.exc!==undefined?f.exc:(d.exclude||[]).join('\n'))}</textarea>
+      <label class="fld">Domain Controller IP (opsiyonel)</label>
+      <input id="dc" class="mono" type="text" placeholder="örn. 192.168.1.10" value="${f.dc!==undefined?esc(f.dc):(d.dc!=null?esc(d.dc):'')}">
+      <div class="muted" style="font-size:12px;margin-top:3px">Verilirse DC, port tespitinden bağımsız olarak kesin DC adayı sayılır (AD/BloodHound atlanmaz). Boşsa otomatik tespit (port 88/3268).</div>
       <label class="fld" style="margin-top:14px"><input type="checkbox" id="dry" ${f.dry?'checked':''}> Dry-run (komutları yaz, çalıştırma)</label>
 
       <div class="perf-sec">
@@ -405,6 +408,7 @@ async function saveScan(){
   const numOrNull=v=>{ const n=parseInt(v,10); return Number.isFinite(n)?n:null; };
   const body={name:f.nm||null, description:f.desc||null, include, exclude,
     modules, plugins:[..._pluginSel], dry_run:!!f.dry,
+    dc:(f.dc||'').trim()||null,
     max_hosts:numOrNull(f.mh), max_procs:numOrNull(f.mp), rate_limit_pps:numOrNull(f.rl)};
   if(_cred && c.user){ body.credential={domain:c.dom||null, username:c.user, password:c.pw||null, ntlm_hash:c.hash||null}; }
   try{ await post('/api/scans',body); resetNew(); location.hash='#/scans'; }

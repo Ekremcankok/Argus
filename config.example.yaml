@@ -42,6 +42,9 @@ credentials:
     # ntlm_hash_env: RECON_LOWPRIV_HASH   # alternatif: pass-the-hash için
 
 # ── Altyapı ipuçları (biliniyorsa; boşsa modüller keşiften çıkarır)
+# dc: verilirse port tespitinden BAĞIMSIZ olarak kesin DC adayı sayılır (kapsam
+#     içinde olmalı). Port taraması tutarsızsa (host-timeout vb.) AD/BloodHound'un
+#     "DC adayı yok" diye atlanmasını önler. Panelden de verilebilir.
 dc: 192.168.1.10
 dns: 192.168.1.10
 

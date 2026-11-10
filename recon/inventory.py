@@ -49,6 +49,14 @@ class Inventory:
         self._lock = threading.Lock()
         self.hosts: dict[str, Host] = {}
         self.found_credentials: list[FoundCredential] = []
+        # Operatörün bildirdiği DC IP'leri (config.dc / panel). Port tespitinden
+        # BAĞIMSIZ olarak DC adayı sayılır → tutarsız/eksik port taramasında bile
+        # DC kaybolmaz (deterministik).
+        self._dc_hints: set[str] = set()
+
+    def add_dc_hint(self, ip: str) -> None:
+        with self._lock:
+            self._dc_hints.add(ip)
 
     # ── host/servis ──────────────────────────────────────────────
     def upsert_host(self, ip: str, alive: bool = True) -> Host:
@@ -82,9 +90,15 @@ class Inventory:
         return [ip for ip, h in self.hosts.items() if role in h.roles]
 
     def dc_candidates(self) -> list[str]:
-        # 88 (kerberos) + 389 (ldap) açık olan hostlar DC adayı.
-        return [ip for ip, h in self.hosts.items()
-                if h.has_port(88) and h.has_port(389)]
+        # Önce operatör ipuçları (deterministik), sonra port-tespitli adaylar.
+        # Port sinyali: 88 (Kerberos KDC) VEYA 3268 (Global Catalog) — ikisi de
+        # DC'ye özgüdür. Eskiden 88 VE 389 birlikte şarttı; DC'de çok port açık
+        # olduğundan host-timeout'ta biri düşünce DC kayboluyordu (tutarsızlık).
+        # LDAP (389) tek başına DC göstergesi değildir, bu yüzden 88/3268 kullanılır.
+        detected = [ip for ip, h in self.hosts.items()
+                    if h.has_port(88) or h.has_port(3268)]
+        hints = sorted(self._dc_hints)
+        return hints + [ip for ip in detected if ip not in self._dc_hints]
 
     def relay_targets(self) -> list[str]:
         return [ip for ip, h in self.hosts.items() if h.smb_signing is False]

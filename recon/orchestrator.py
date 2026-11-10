@@ -56,6 +56,11 @@ class Orchestrator:
                              max_procs=config.concurrency.max_procs)
         self.store = FindingStore(self.run_dir / "findings.sqlite")
         self.inventory = Inventory()
+        # Operatör DC IP'si verdiyse (config.dc / panel) ve kapsam içindeyse,
+        # port tespitine bakılmaksızın DC adayı olarak işaretle (deterministik).
+        if config.dc and self.scope.is_allowed(config.dc):
+            self.inventory.add_dc_hint(config.dc)
+            log.info("DC ipucu (config): %s — port tespitinden bağımsız DC adayı", config.dc)
         self.state = RunState(self.run_dir / "state.json")
 
     # ── modül seçimi ────────────────────────────────────────────
