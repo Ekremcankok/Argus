@@ -1,6 +1,6 @@
 """Faz 5 — Active Directory Enumeration (kimlikli).
 
-Kerberoastable SPN, AS-REP roastable, GPP cpassword, MachineAccountQuota,
+Kerberoastable SPN, AS-REP roastable, MachineAccountQuota,
 parola politikası (lockout), ADCS ESC1–ESC16 şablon zafiyetleri. Hepsi
 tespit/enumerasyon — hash çıkarma otomatik, kırma/sömürü manuel.
 """
@@ -144,30 +144,6 @@ def parse_maq(output: str) -> Optional[int]:
     return int(m.group(1)) if m else None
 
 
-def parse_gpp_found(output: str) -> bool:
-    """nxc -M gpp_password cpassword buldu mu?"""
-    low = output.lower()
-    return ("gpp_password" in low or "gpp_autologin" in low) and \
-           ("password:" in low or "found" in low or "usernames:" in low)
-
-
-def parse_gpp_creds(output: str) -> list[tuple[str, str]]:
-    """nxc gpp_password çıktısından (kullanıcı, parola) çiftleri."""
-    clean = re.sub(r"\x1b\[[0-9;]*m", "", output or "")
-    users, passes = [], []
-    for m in re.finditer(r"Usernames?\s*:\s*\[?\s*'?([^'\]\r\n]+)", clean, re.I):
-        users += [u.strip() for u in re.split(r"['\",]", m.group(1)) if u.strip()]
-    for m in re.finditer(r"Passwords?\s*:\s*\[?\s*'?([^'\]\r\n]+)", clean, re.I):
-        passes += [p.strip() for p in re.split(r"['\",]", m.group(1)) if p.strip()]
-    pairs = []
-    for i, u in enumerate(users):
-        pairs.append((u, passes[i] if i < len(passes) else "(parola ayrı satırda)"))
-    # Kullanıcı yakalanamadıysa ama parola varsa yine göster
-    if not pairs and passes:
-        pairs = [("(bilinmeyen)", p) for p in passes]
-    return pairs
-
-
 def parse_passpol(output: str) -> list[str]:
     """nxc --pass-pol çıktısından okunur politika satırları."""
     clean = re.sub(r"\x1b\[[0-9;]*m", "", output or "")
@@ -193,14 +169,14 @@ class ADModule(Module):
     name = "ad"
     label = "Active Directory"
     phase = 5
-    description = ("Kerberoast, AS-REP, GPP cpassword, MachineAccountQuota, "
+    description = ("Kerberoast, AS-REP, MachineAccountQuota, "
                    "parola politikası, ADCS ESC1–ESC16 şablon tespiti.")
     intrusive = False
     default_enabled = True
 
     # ADCS ESC plugin'leri katalogdan dinamik (certipy yeni ESC ekledikçe genişler)
     ESC_KBS = {k for k in load_catalog() if k.startswith("adcs-esc")}
-    PLUGINS = {"kerberoastable", "asrep-roastable", "gpp-cpassword",
+    PLUGINS = {"kerberoastable", "asrep-roastable",
                "machineaccountquota", "weak-password-policy", "description-password",
                "unconstrained-delegation", "constrained-delegation",
                "laps-readable", "gmsa-readable", "ldap-signing-disabled"} | ESC_KBS
@@ -269,7 +245,6 @@ class ADModule(Module):
         findings += self._ldap_signing(ctx, cred, out_dir)
         findings += self._kerberoast(ctx, dc, cred, out_dir)
         findings += self._asrep(ctx, dc, cred, out_dir)
-        findings += self._gpp(ctx, dc, cred, out_dir)
         findings += self._maq(ctx, dc, cred, out_dir)
         findings += self._passpol(ctx, dc, cred, out_dir)
         findings += self._adcs(ctx, dc, cred, out_dir)
@@ -336,33 +311,6 @@ class ADModule(Module):
             source_tool="impacket", kb_id="asrep-roastable", evidence_path=ev,
             notes=("Kerberos pre-auth KAPALI (hash ham çıktıda; offline kırma: "
                    "hashcat -m 18200). Hesaplar:\n" + _cap_lines(users)))]
-
-    def _gpp(self, ctx, dc, cred, out_dir):
-        if not ctx.plugin_enabled("gpp-cpassword"):
-            return []
-        nxc = nxc_binary()
-        if not nxc:
-            return []
-        res = ctx.runner.run([nxc, "smb", dc, *nxc_auth(cred), "-M", "gpp_password"],
-                             timeout=180, raw_path=out_dir / "gpp.txt")
-        if res.skipped:
-            return []
-        if parse_gpp_found(res.stdout + res.stderr):
-            creds = parse_gpp_creds(res.stdout + res.stderr)
-            if creds:
-                detail = "Bulunan kimlikler (SYSVOL Groups.xml, AES çözüldü):\n" + \
-                         "\n".join(f"{u} : {p}" for u, p in creds)
-            else:
-                detail = "cpassword bulundu; parola için ham çıktıya bak (gpp.txt)."
-            return [Finding(
-                host=dc, phase=self.name, category="cred",
-                title="GPP cpassword (SYSVOL) — çözülebilir parola",
-                severity=Severity.high, confidence=Confidence.detected,
-                exploitable=Exploitable.manual, manual_followup=True,
-                source_tool="netexec", kb_id="gpp-cpassword",
-                evidence_path=str((out_dir / "gpp.txt").as_posix()),
-                notes=detail)]
-        return []
 
     def _maq(self, ctx, dc, cred, out_dir):
         if not ctx.plugin_enabled("machineaccountquota"):

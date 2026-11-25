@@ -11,7 +11,8 @@ Zincirler (her biri TEK konsolide bulgu):
   chain-webdav-ldap         WebClient + LDAP signing yok → RBCD/Shadow Creds ile devralma
   chain-unconstrained-coerce DC olmayan unconstrained + coerce edilebilir DC → DC TGT
   chain-delegation-dc       constrained delegation hedefi DC servisi
-  chain-privileged-roast    roast edilebilir / description parolalı hesap ayrıcalıklı
+  chain-privileged-roast    roast edilebilir / description / GPP parolalı hesap ayrıcalıklı
+  chain-ntlmv1-coercion     NTLMv1 GPO + coerce edilebilir DC → DC makine hash'i
 """
 from __future__ import annotations
 
@@ -121,7 +122,8 @@ class CorrelateModule(Module):
     default_enabled = True
 
     PLUGINS = {"chain-esc8-coercion", "chain-reflection-signing", "chain-webdav-ldap",
-               "chain-unconstrained-coerce", "chain-delegation-dc", "chain-privileged-roast"}
+               "chain-unconstrained-coerce", "chain-delegation-dc", "chain-privileged-roast",
+               "chain-ntlmv1-coercion"}
 
     def requires(self, ctx: ModuleContext) -> Optional[str]:
         if ctx.store is None or not ctx.store.all():
@@ -283,6 +285,14 @@ class CorrelateModule(Module):
                 for a in accounts_in(notes(kb)):
                     if a.upper() in priv:
                         hits.append(f"{a}  ({label})")
+            # SYSVOL'da düz metin/çözülmüş parolası bulunan DOMAIN hesapları
+            # (yalnız 'DOMAIN\\kullanıcı' biçimi — yerel 'Administrator (built-in)'
+            # gibi hesaplar domain Administrator ile karışmasın)
+            for kb, label in (("gpp-autologon", "GPP autologon parolası"),
+                              ("gpp-cpassword", "GPP cpassword")):
+                for a in accounts_in(notes(kb)):
+                    if "\\" in a and a.split("\\")[-1].upper() in priv:
+                        hits.append(f"{a}  ({label})")
             if hits:
                 out.append(self._chain(
                     "chain-privileged-roast",
@@ -292,6 +302,22 @@ class CorrelateModule(Module):
                     "hash ya da description parolası ile ele geçirilebilir → doğrudan "
                     "domain/sunucu yönetimi (kırma MANUEL).\n" + "\n".join(hits),
                     conf=Confidence.detected))
+
+        # 7) NTLMv1'e izin veren GPO + coerce edilebilir DC → DC makine hash'i
+        if ctx.plugin_enabled("chain-ntlmv1-coercion") and "ntlmv1-enabled" in by:
+            dcs_c = [ip for ip in coerce if ip in ctx.inventory.dc_candidates()]
+            if dcs_c:
+                pol = body_lines(notes("ntlmv1-enabled"))
+                out.append(self._chain(
+                    "chain-ntlmv1-coercion",
+                    f"Zincir: NTLMv1 + coercion → DC makine hash'i: {len(dcs_c)} DC",
+                    Severity.critical,
+                    "GPO NTLMv1'e izin veriyor; coerce edilen DC'nin NTLMv1 yanıtı sabit "
+                    "challenge ile yakalanıp DES'e indirgenerek DC$ NT hash'ine çevrilir → "
+                    "DCSync (MANUEL: responder --lm --disable-ess + PetitPotam). Not: "
+                    "politikanın DC'lere uygulandığı MANUEL doğrulanmalı.\nPolitikalar:\n"
+                    + "\n".join(pol) + "\nCoerce edilebilen DC'ler: "
+                    + ", ".join(f"{self._name(ctx, ip)} ({coerce[ip]})" for ip in dcs_c)))
 
         self.log().info("%d zincir bulgusu", len(out))
         ctx.progress(self.name, f"{len(out)} zincir")

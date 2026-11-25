@@ -256,6 +256,84 @@ def test_privileged_accounts_admincount_and_nested():
     assert privileged_accounts(objs) == {"ADMINISTRATOR", "IT_OPS"}   # svc_sql değil
 
 
+GROUPS_XML = ('<Groups clsid="{3125E937}"><User clsid="{DF5F1855}" name="Administrator (built-in)">'
+              '<Properties action="U" newName="" fullName="Local Admin" '
+              'cpassword="j1Uyj3Vx8TY9LtLZil2uAuZkFQA/4latT76ZwgdHdhw" changeLogon="0" '
+              'userName="Administrator (built-in)"/></User></Groups>')
+
+REGISTRY_XML = """<RegistrySettings>
+ <Registry name="AutoAdminLogon"><Properties action="U" hive="HKEY_LOCAL_MACHINE" key="SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon" name="AutoAdminLogon" type="REG_SZ" value="1"/></Registry>
+ <Registry name="DefaultUserName"><Properties action="U" key="SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon" name="DefaultUserName" type="REG_SZ" value="LAB\\svc_autologon"/></Registry>
+ <Registry name="DefaultPassword"><Properties action="U" key="SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon" name="DefaultPassword" type="REG_SZ" value="Autumn2024Autologon!"/></Registry>
+</RegistrySettings>"""
+
+
+def _preg(entries):
+    """Test için Registry.pol (PReg) üretir: [(key, name, type, data_bytes)]."""
+    u = lambda s: s.encode("utf-16-le")
+    b = b"PReg" + (1).to_bytes(4, "little")
+    for key, name, typ, data in entries:
+        b += (u("[") + u(key) + b"\x00\x00" + u(";") + u(name) + b"\x00\x00" + u(";")
+              + typ.to_bytes(4, "little") + u(";") + len(data).to_bytes(4, "little") + u(";")
+              + data + u("]"))
+    return b
+
+
+def test_gpp_cpassword_and_autologon():
+    from recon.modules.adhealth import gpp_decrypt, parse_gpp_cpasswords, parse_registry_xml
+    cp = parse_gpp_cpasswords(GROUPS_XML)
+    assert cp == [("Administrator (built-in)", "j1Uyj3Vx8TY9LtLZil2uAuZkFQA/4latT76ZwgdHdhw")]
+    pw = gpp_decrypt(cp[0][1])
+    assert pw is None or pw == "Local*P4ssword!"      # MS-GPPREF bilinen örnek değeri
+    vals = {i["name"].lower(): i["value"] for i in parse_registry_xml(REGISTRY_XML)}
+    assert vals["defaultpassword"] == "Autumn2024Autologon!"
+    assert vals["defaultusername"] == "LAB\\svc_autologon"
+
+
+def test_registry_pol_and_gpttmpl():
+    from recon.modules.adhealth import parse_gpttmpl_lmcompat, parse_registry_pol
+    pol = _preg([
+        ("Software\\Policies\\Microsoft\\Windows\\WindowsUpdate", "WUServer", 1,
+         "http://wsus.lab.local:8530\x00".encode("utf-16-le")),
+        ("Software\\Policies\\Microsoft\\Windows NT\\DNSClient", "EnableMulticast", 4,
+         (0).to_bytes(4, "little")),
+    ])
+    items = {i["name"]: i for i in parse_registry_pol(pol)}
+    assert items["WUServer"]["value"] == "http://wsus.lab.local:8530"
+    assert items["EnableMulticast"]["value"] == "0" and "DNSClient" in items["EnableMulticast"]["key"]
+    assert parse_registry_pol(b"not a pol") == []
+    inf = "[Registry Values]\nMACHINE\\System\\CurrentControlSet\\Control\\Lsa\\LmCompatibilityLevel=4,1\n"
+    assert parse_gpttmpl_lmcompat(inf) == 1
+    assert parse_gpttmpl_lmcompat("MACHINE\\...\\Lsa\\NoLMHash=4,1") is None
+
+
+def test_filetime_and_obsolete():
+    from recon.modules.adhealth import _OBSOLETE, filetime_to_dt
+    assert filetime_to_dt("134260315941355344").year == 2026
+    assert filetime_to_dt("0") is None
+    assert _OBSOLETE.search("Windows Server 2008 R2 Standard")
+    assert _OBSOLETE.search("Windows 7 Professional")
+    assert not _OBSOLETE.search("Windows Server 2022 Standard Evaluation")
+    assert not _OBSOLETE.search("Windows 10 Enterprise Evaluation")
+
+
+def test_spooler_showmount_tls():
+    from recon.modules.exposure import parse_showmount, parse_tls_xml
+    from recon.modules.poison import parse_spooler
+    sp = ("SPOOLER 192.168.1.11 445 SRV01 Spooler service enabled\n"
+          "SPOOLER 192.168.1.12 445 WIN10 Spooler service disabled\n")
+    assert parse_spooler(sp) == ["192.168.1.11"]
+    assert parse_showmount("Export list for 10.0.0.5:\n/srv/share *\n/home 10.0.0.0/24\n") == [
+        "/srv/share *", "/home 10.0.0.0/24"]
+    xml = ('<nmaprun><host><address addr="192.168.1.10" addrtype="ipv4"/><ports>'
+           '<port protocol="tcp" portid="636"><script id="ssl-enum-ciphers">'
+           '<table key="TLSv1.0"/><table key="TLSv1.2"/><elem key="least strength">C</elem></script></port>'
+           '<port protocol="tcp" portid="443"><script id="ssl-heartbleed" output="VULNERABLE: heartbleed"/></port>'
+           '</ports></host></nmaprun>')
+    weak, hb = parse_tls_xml(xml)
+    assert weak == {"192.168.1.10:636": ["TLSv1.0"]} and hb == ["192.168.1.10:443"]
+
+
 if __name__ == "__main__":
     fails = 0
     for name, fn in sorted(globals().items()):

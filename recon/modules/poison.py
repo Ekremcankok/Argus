@@ -41,17 +41,32 @@ def parse_webdav(output: str) -> list[str]:
     return out
 
 
+def parse_spooler(output: str) -> list[str]:
+    """nxc -M spooler → servisi AÇIK hostlar ('Spooler service enabled').
+
+    'disabled' / 'not' içeren satırlar elenir."""
+    clean = re.sub(r"\x1b\[[0-9;]*m", "", output or "")
+    out = []
+    for line in clean.splitlines():
+        low = line.lower()
+        if "spooler" in low and "enabled" in low and "disabled" not in low and " not " not in low:
+            m = _IP.search(line)
+            if m and m.group(1) not in out:
+                out.append(m.group(1))
+    return out
+
+
 @register
 class PoisonModule(Module):
     name = "poison"
     label = "Zehirleme / Relay Yüzeyi"
     phase = 6
-    description = ("Relay/coercion yüzeyi tespiti: WebDAV (HTTP coercion). "
+    description = ("Relay/coercion yüzeyi tespiti: WebDAV (HTTP coercion), Print Spooler. "
                    "Aktif zehirleme/relay MANUEL (operatör).")
     intrusive = False
     default_enabled = True
 
-    PLUGINS = {"webdav-enabled"}
+    PLUGINS = {"webdav-enabled", "spooler-enabled"}
 
     def requires(self, ctx: ModuleContext) -> Optional[str]:
         if not ctx.inventory.hosts_with_port(445):
@@ -91,6 +106,30 @@ class PoisonModule(Module):
                         source_tool="netexec", kb_id="webdav-enabled", evidence_path=ev,
                         notes=("HTTP coercion → relay yüzeyi (relay MANUEL). "
                                "WebClient etkin hostlar:\n" + "\n".join(wd))))
+
+        # 2) Print Spooler (tüm hostlar) — PrinterBug coercion kaynağı → TEK bulgu
+        if ctx.plugin_enabled("spooler-enabled"):
+            cred = ctx.primary_credential()
+            sr = run_chunked(ctx, hosts,
+                             lambda part: [nxc, "smb", *part, *nxc_auth(cred), "-M", "spooler"],
+                             out_dir, "spooler", timeout=180)
+            cov = coverage_finding(self.name, "Print Spooler", sr.unchecked, sr.evidence)
+            if cov:
+                findings.append(cov)
+            sp = sorted({ip for ip in parse_spooler(sr.text) if ctx.scope.is_allowed(ip)})
+            if sp:
+                dcs = set(ctx.inventory.dc_candidates())
+                lines = [f"{ip}  (DC — kritik)" if ip in dcs else ip for ip in sp]
+                findings.append(Finding(
+                    host="scope", port=445, phase=self.name, category="config",
+                    title=f"Print Spooler açık: {len(sp)} host",
+                    severity=Severity.medium, confidence=Confidence.detected,
+                    exploitable=Exploitable.manual, manual_followup=True,
+                    source_tool="netexec", kb_id="spooler-enabled", evidence_path=sr.evidence,
+                    notes=("Spooler açık her makine PrinterBug (MS-RPRN) ile herhangi bir "
+                           "domain kullanıcısı tarafından coerce edilebilir → makine hesabı "
+                           "relay / unconstrained delegation zinciri (MANUEL). Hostlar:\n"
+                           + "\n".join(lines))))
 
         # Not: signing=false relay hedefleri smb modülünün "SMB signing kapalı"
         # bulgusunda zaten tek konsolide bulgu olarak var; burada tekrarlanmaz.
