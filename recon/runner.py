@@ -54,6 +54,7 @@ class Runner:
         # harici süreç (nmap/nxc/impacket...) çalışır. Böylece 500 IP'lik bir
         # taramada bile açık komut sayısı sabit kalır (Kali çökmesin).
         self._proc_sem = threading.BoundedSemaphore(max(1, int(max_procs)))
+        self._audit_lock = threading.Lock()   # paralel parçalar audit satırlarını karıştırmasın
 
     @staticmethod
     def tool_available(tool: str) -> bool:
@@ -125,5 +126,5 @@ class Runner:
 
     def _audit_write(self, line: str) -> None:
         ts = time.strftime("%Y-%m-%d %H:%M:%S")
-        with self._audit.open("a", encoding="utf-8") as fh:
+        with self._audit_lock, self._audit.open("a", encoding="utf-8") as fh:
             fh.write(f"{ts} {mask_text(line)}\n")

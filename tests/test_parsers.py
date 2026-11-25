@@ -210,6 +210,29 @@ def test_run_chunked_marks_timed_out_hosts_unchecked():
     assert r.unchecked == [f"10.0.0.{i}" for i in range(34, 41)]
 
 
+def test_run_chunked_parallel_respects_cap_and_order():
+    import threading
+    import time
+    lock, state = threading.Lock(), {"now": 0, "peak": 0}
+
+    class SlowRunner:
+        def run(self, cmd, timeout, raw_path):
+            with lock:
+                state["now"] += 1
+                state["peak"] = max(state["peak"], state["now"])
+            time.sleep(0.05)
+            with lock:
+                state["now"] -= 1
+            return types.SimpleNamespace(skipped=False, reason="", stdout=cmd[2], stderr="")
+
+    ctx = types.SimpleNamespace(runner=SlowRunner(), config=types.SimpleNamespace(
+        concurrency=types.SimpleNamespace(max_procs=4)))
+    hosts = [f"10.0.{i // 250}.{i % 250 + 1}" for i in range(320)]   # 10 parça
+    r = run_chunked(ctx, hosts, lambda part: ["nxc", "smb", part[0]], Path("."), "t")
+    assert 1 < state["peak"] <= 4                                  # paralel ama tavan aşılmıyor
+    assert r.text.split() == [hosts[i] for i in range(0, 320, 32)]  # parça sırası korunuyor
+
+
 def test_runner_timeout_returns_text_not_bytes():
     with tempfile.TemporaryDirectory() as d:
         r = Runner(Path(d) / "audit.log", max_procs=1)

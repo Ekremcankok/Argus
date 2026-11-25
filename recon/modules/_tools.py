@@ -2,6 +2,7 @@
 çok-host çalıştırma, nxc LDAP sorgu ayrıştırma, kapsam uyarısı)."""
 from __future__ import annotations
 
+import concurrent.futures
 import re
 import shutil
 from pathlib import Path
@@ -76,15 +77,30 @@ def run_chunked(ctx, hosts: list[str], build_cmd: Callable[[list[str]], list[str
 
     build_cmd(parça_hostları) → komut. Her parça `<name>_<n>.txt`'ye yazılır.
     Bir parça zaman aşımına uğrarsa, çıktıda IP'si hiç görünmeyen hostlar
-    `unchecked` listesine girer (sessizce "temiz" sayılmaz)."""
+    `unchecked` listesine girer (sessizce "temiz" sayılmaz).
+
+    Parçalar PARALEL çalışır (en fazla config.max_procs kadar); toplam açık
+    süreç sayısını yine Runner'ın global semaforu sınırlar, yani tavan aşılmaz.
+    Sonuçlar parça sırasıyla birleştirilir (deterministik çıktı)."""
     res_all = ChunkResult()
     if not hosts:
         return res_all
     parts = [hosts[i:i + chunk] for i in range(0, len(hosts), chunk)]
     single = len(parts) == 1
-    for n, part in enumerate(parts, 1):
-        raw = out_dir / (f"{name}.txt" if single else f"{name}_{n}.txt")
-        res = ctx.runner.run(build_cmd(part), timeout=timeout, raw_path=raw)
+    # Komutlar ana thread'de, sırayla kurulur (build_cmd dosya adı sayacı
+    # tutabilir — thread güvenliği için paralel çağrılmaz).
+    jobs = [(part, build_cmd(part),
+             out_dir / (f"{name}.txt" if single else f"{name}_{n}.txt"))
+            for n, part in enumerate(parts, 1)]
+    cc = getattr(getattr(ctx, "config", None), "concurrency", None)
+    workers = max(1, min(getattr(cc, "max_procs", 1) or 1, len(jobs)))
+    run = lambda j: ctx.runner.run(j[1], timeout=timeout, raw_path=j[2])
+    if workers == 1:
+        results = [run(j) for j in jobs]
+    else:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+            results = list(pool.map(run, jobs))
+    for (part, _cmd, raw), res in zip(jobs, results):
         if res.skipped:
             continue
         res_all.ran = True
