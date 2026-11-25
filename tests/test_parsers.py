@@ -221,6 +221,41 @@ def test_runner_timeout_returns_text_not_bytes():
         assert (Path(d) / "raw.txt").exists()
 
 
+def test_correlate_note_parsers():
+    from recon.modules.correlate import (accounts_in, coercible_hosts, constrained_entries,
+                                         ips_in, spn_host)
+    coer = ("Kimlik doğrulamasız DC auth zorlama ... Açık DC'ler ve yöntemler:\n"
+            "192.168.1.10: MSEven, PetitPotam, PrinterBug")
+    sccm = ("Coerce edilebilen SCCM sunucuları:\n192.168.1.14 (SCCM01): PetitPotam, PrinterBug\n\n"
+            "Olası zincirler:\n- TAKEOVER-1 / CRED-8: 192.168.1.14 (SCCM01) coerce → 192.168.1.11")
+    assert coercible_hosts(coer) == {"192.168.1.10": "MSEven, PetitPotam, PrinterBug"}
+    assert coercible_hosts(sccm) == {"192.168.1.14": "PetitPotam, PrinterBug"}
+    assert ips_in("SMB signing OLMAYAN hostlar:\n192.168.1.11\n192.168.1.14") == [
+        "192.168.1.11", "192.168.1.14"]
+    assert accounts_in("Etkilenen hesaplar:\nsvc_web  (kullanıcı/servis hesabı)") == ["svc_web"]
+    assert accounts_in("TGS ... Hesap [SPN]:\nsvc_sql  [MSSQLSvc/x:1433]\n(+3 daha)") == ["svc_sql"]
+    assert accounts_in("Kullanıcı: açıklama\nhelpdesk: Pass=Welcome1!") == ["helpdesk"]
+    con = constrained_entries("S4U ... hedef:\nsvc_sql  [Constrained w/ Protocol Transition] → "
+                              "CIFS/DC01.lab.local\nUFRAWXAO$  [Resource-Based Constrained] → SRV01$")
+    assert [spn_host(r) for _, _, r in con] == ["DC01", "SRV01"]
+
+
+def test_privileged_accounts_admincount_and_nested():
+    from recon.modules.correlate import privileged_accounts
+    objs = {
+        "users": [
+            {"ObjectIdentifier": "S-1-5-21-1-500", "Properties": {"samaccountname": "Administrator", "admincount": True}},
+            {"ObjectIdentifier": "S-1-5-21-1-1106", "Properties": {"samaccountname": "svc_sql", "admincount": False}},
+            {"ObjectIdentifier": "S-1-5-21-1-1200", "Properties": {"samaccountname": "it_ops", "admincount": False}},
+        ],
+        "groups": [
+            {"ObjectIdentifier": "S-1-5-21-1-512", "Members": [{"ObjectIdentifier": "S-1-5-21-1-3000"}]},
+            {"ObjectIdentifier": "S-1-5-21-1-3000", "Members": [{"ObjectIdentifier": "S-1-5-21-1-1200"}]},
+        ],
+    }
+    assert privileged_accounts(objs) == {"ADMINISTRATOR", "IT_OPS"}   # svc_sql değil
+
+
 if __name__ == "__main__":
     fails = 0
     for name, fn in sorted(globals().items()):

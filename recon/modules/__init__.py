@@ -18,6 +18,7 @@ _BUILTIN = [
     "recon.modules.bloodhound",
     "recon.modules.poison",
     "recon.modules.sccm",
+    "recon.modules.correlate",
     "recon.modules.report",
 ]
 

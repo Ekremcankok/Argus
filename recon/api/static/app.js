@@ -5,8 +5,8 @@ const SEV_COLOR = {critical:'#ef4444',high:'#f97316',medium:'#eab308',low:'#22d3
 const CAT_TR = {vuln:'Zafiyet',config:'Yapılandırma',cred:'Kimlik Bilgisi',service:'Servis',info:'Bilgi'};
 const FAM = {discovery:'Keşif',portscan:'Port & Servis',quickcve:'Hızlı CVE',
   smb:'SMB / NetBIOS',ad:'Active Directory',kerberos:'Kerberos',
-  poison:'Ağ Zehirleme / Relay',sccm:'SCCM / MECM'};
-const FAM_ORDER = ['discovery','portscan','quickcve','smb','ad','kerberos','poison','sccm'];
+  poison:'Ağ Zehirleme / Relay',sccm:'SCCM / MECM',correlate:'Zincir / Korelasyon'};
+const FAM_ORDER = ['discovery','portscan','quickcve','smb','ad','kerberos','poison','sccm','correlate'];
 const BASE_MODULES = ['discovery','portscan','report']; // temel keşif + her koşuda rapor
 
 const S = { modules:[], builtNames:new Set(), catalog:[], status:'idle', activeJob:null };
