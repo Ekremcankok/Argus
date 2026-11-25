@@ -6,6 +6,7 @@ tespit/enumerasyon — hash çıkarma otomatik, kırma/sömürü manuel.
 """
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 from typing import Optional
@@ -13,14 +14,63 @@ from typing import Optional
 from ..catalog import get_entry, load_catalog
 from ..findings import Finding, Severity, Confidence, Exploitable
 from ..registry import register
-from ._tools import nxc_binary, nxc_auth, impacket_tool, certipy_bin, summarize
+from ._tools import (nxc_binary, nxc_auth, impacket_tool, certipy_bin, ldap_query,
+                     parse_ldap_banner, strip_ansi)
 from .base import Module, ModuleContext
 
-# Ölçekte (1000-5000 kullanıcı) tek tür bulguyu bu sayıyla sınırla; kalanı özet
-_CAP = 40
+# Konsolide bulgunun notunda tek tek listelenecek en fazla satır (ölçek: 1000-5000
+# kullanıcı). Fazlası "+N daha" olarak özetlenir; tam liste ham çıktıdadır.
+_LIST_CAP = 200
+
+# DC'lerin makine hesapları her zaman unconstrained delegation taşır (beklenen
+# davranış) → bulgudan elenir. SERVER_TRUST_ACCOUNT (8192) = DC.
+_DC_FILTER = "(userAccountControl:1.2.840.113556.1.4.803:=8192)"
+
+
+def _cap_lines(lines: list[str], cap: int = _LIST_CAP) -> str:
+    extra = len(lines) - cap
+    return "\n".join(lines[:cap]) + (f"\n(+{extra} daha — tam liste ham çıktıda)" if extra > 0 else "")
+
+
+def parse_certipy_json(data: dict) -> dict[int, list[str]]:
+    """certipy find -json çıktısı → {ESC no: ["Şablon: X — neden", "CA: Y — neden"]}.
+
+    Yalnız '[!] Vulnerabilities' altındaki ESC anahtarları sayılır; metin
+    çıktısında 'ESC\\d+' aramak (açıklama/remark metinleri) yanlış pozitif verir."""
+    out: dict[int, list[str]] = {}
+    for section, label, name_key in (("Certificate Authorities", "CA", "CA Name"),
+                                     ("Certificate Templates", "Şablon", "Template Name")):
+        for item in (data.get(section) or {}).values():
+            if not isinstance(item, dict):
+                continue
+            vulns = item.get("[!] Vulnerabilities") or {}
+            if not isinstance(vulns, dict):
+                continue
+            for key, why in vulns.items():
+                m = re.fullmatch(r"ESC(\d{1,2})", str(key).strip(), re.I)
+                if m:
+                    out.setdefault(int(m.group(1)), []).append(
+                        f"{label}: {item.get(name_key, '?')} — {why}")
+    return out
+
+
+_RE_LAPS = re.compile(r"Computer:\s*(\S+)\s+User:\s*\S*\s+Password:\s*(\S+)", re.I)
+
+
+def parse_laps(output: str) -> list[str]:
+    """nxc ldap -M laps → parolası OKUNABİLEN bilgisayarlar.
+
+    Okunabilirse nxc 'Computer:<ad> User:<kullanıcı> Password:<parola>' basar.
+    'No result found with attribute ms-MCS-AdmPwd...' gibi negatif satırlar
+    bu kalıba uymaz → yanlış pozitif yok."""
+    out = []
+    for m in _RE_LAPS.finditer(strip_ansi(output)):
+        comp, pw = m.group(1), m.group(2)
+        if pw and not pw.startswith("<") and comp not in out:
+            out.append(comp)
+    return out
 
 _RE_ASREP = re.compile(r"\$krb5asrep\$\d+\$([^@\s:]+)", re.I)
-_RE_ESC = re.compile(r"\bESC(\d{1,2})\b")
 _RE_MAQ = re.compile(r"MachineAccountQuota[:\s]+(\d+)", re.I)
 # GetUserSPNs -request çıktısındaki GERÇEK TGS hash'i (hashcat formatı):
 #   $krb5tgs$23$*hesap$REALM$spn*$checksum$edata...
@@ -47,11 +97,6 @@ def parse_kerberoast(output: str) -> list[tuple[str, str]]:
 def parse_asrep(output: str) -> list[str]:
     """GetNPUsers çıktısındaki AS-REP hash'lerinden kullanıcı adları."""
     return sorted(set(_RE_ASREP.findall(output)))
-
-
-def parse_esc(output: str) -> set[int]:
-    """certipy find çıktısından ESC numaraları (1–16)."""
-    return {int(n) for n in _RE_ESC.findall(output)}
 
 
 # impacket-findDelegation satırı: Account  Type(Person/Computer)  DelegationType  RightsTo  SPNExists
@@ -158,7 +203,7 @@ class ADModule(Module):
     PLUGINS = {"kerberoastable", "asrep-roastable", "gpp-cpassword",
                "machineaccountquota", "weak-password-policy", "description-password",
                "unconstrained-delegation", "constrained-delegation",
-               "laps-readable", "gmsa-readable"} | ESC_KBS
+               "laps-readable", "gmsa-readable", "ldap-signing-disabled"} | ESC_KBS
 
     def requires(self, ctx: ModuleContext) -> Optional[str]:
         if not ctx.inventory.dc_candidates():
@@ -221,6 +266,7 @@ class ADModule(Module):
         if "." not in self._domain:
             self._domain = self._resolve_domain(ctx, dc, out_dir) or self._domain
 
+        findings += self._ldap_signing(ctx, cred, out_dir)
         findings += self._kerberoast(ctx, dc, cred, out_dir)
         findings += self._asrep(ctx, dc, cred, out_dir)
         findings += self._gpp(ctx, dc, cred, out_dir)
@@ -251,26 +297,19 @@ class ADModule(Module):
         if res.skipped:
             return []
         items = parse_kerberoast(res.stdout + res.stderr)
+        if not items:
+            return []
         ev = str((out_dir / "kerberoast.txt").as_posix())
-        out = []
-        for spn, acct in items[:_CAP]:
-            out.append(Finding(
-                host=dc, phase=self.name, category="vuln",
-                title=f"Kerberoastable SPN: {acct}",
-                severity=Severity.high, confidence=Confidence.detected,
-                exploitable=Exploitable.manual, manual_followup=True,
-                source_tool="impacket", kb_id="kerberoastable", evidence_path=ev,
-                notes=f"SPN={spn}. Hash offline kırılır (hashcat -m 13100)."))
-        if len(items) > _CAP:
-            extra = [a for _, a in items[_CAP:]]
-            out.append(Finding(
-                host=dc, phase=self.name, category="vuln",
-                title=f"+{len(extra)} Kerberoastable hesap daha",
-                severity=Severity.high, confidence=Confidence.detected,
-                exploitable=Exploitable.manual, manual_followup=True,
-                source_tool="impacket", kb_id="kerberoastable", evidence_path=ev,
-                notes="Diğer SPN hesapları: " + summarize(extra, 40)))
-        return out
+        # TEK konsolide bulgu (hesap başına ayrı bulgu değil)
+        lines = [f"{acct}  [{spn}]" for spn, acct in sorted(items, key=lambda x: x[1].lower())]
+        return [Finding(
+            host=dc, phase=self.name, category="vuln",
+            title=f"Kerberoastable hesaplar: {len(items)}",
+            severity=Severity.high, confidence=Confidence.detected,
+            exploitable=Exploitable.manual, manual_followup=True,
+            source_tool="impacket", kb_id="kerberoastable", evidence_path=ev,
+            notes=("TGS bileti ALINABİLEN hesaplar (hash ham çıktıda; offline "
+                   "kırma: hashcat -m 13100). Hesap [SPN]:\n" + _cap_lines(lines)))]
 
     def _asrep(self, ctx, dc, cred, out_dir):
         if not ctx.plugin_enabled("asrep-roastable"):
@@ -285,25 +324,18 @@ class ADModule(Module):
         if res.skipped:
             return []
         users = parse_asrep(res.stdout + res.stderr)
+        if not users:
+            return []
         ev = str((out_dir / "asrep.txt").as_posix())
-        out = []
-        for user in users[:_CAP]:
-            out.append(Finding(
-                host=dc, phase=self.name, category="vuln",
-                title=f"AS-REP Roastable: {user}",
-                severity=Severity.high, confidence=Confidence.detected,
-                exploitable=Exploitable.manual, manual_followup=True,
-                source_tool="impacket", kb_id="asrep-roastable", evidence_path=ev,
-                notes="Pre-auth kapalı. Hash offline kırılır (hashcat -m 18200)."))
-        if len(users) > _CAP:
-            out.append(Finding(
-                host=dc, phase=self.name, category="vuln",
-                title=f"+{len(users) - _CAP} AS-REP Roastable hesap daha",
-                severity=Severity.high, confidence=Confidence.detected,
-                exploitable=Exploitable.manual, manual_followup=True,
-                source_tool="impacket", kb_id="asrep-roastable", evidence_path=ev,
-                notes="Diğer hesaplar: " + summarize(users[_CAP:], 40)))
-        return out
+        # TEK konsolide bulgu
+        return [Finding(
+            host=dc, phase=self.name, category="vuln",
+            title=f"AS-REP Roastable hesaplar: {len(users)}",
+            severity=Severity.high, confidence=Confidence.detected,
+            exploitable=Exploitable.manual, manual_followup=True,
+            source_tool="impacket", kb_id="asrep-roastable", evidence_path=ev,
+            notes=("Kerberos pre-auth KAPALI (hash ham çıktıda; offline kırma: "
+                   "hashcat -m 18200). Hesaplar:\n" + _cap_lines(users)))]
 
     def _gpp(self, ctx, dc, cred, out_dir):
         if not ctx.plugin_enabled("gpp-cpassword"):
@@ -394,27 +426,89 @@ class ADModule(Module):
         cb = certipy_bin()
         if not cb:
             return []
-        res = ctx.runner.run([cb, "find", "-vulnerable", "-stdout",
+        # certipy v5 JSON dosyasını adı sanitize ederek ÇALIŞMA DİZİNİNE yazar →
+        # out_dir'de çalıştırılır. JSON yapısaldır: ESC yalnız '[!] Vulnerabilities'
+        # anahtarından alınır ve hangi şablon/CA olduğu bulguya yazılır.
+        for old in out_dir.glob("*Certipy.json"):
+            old.unlink(missing_ok=True)
+        res = ctx.runner.run([cb, "find", "-vulnerable", "-json", "-output", "adcs",
                               *self._certipy_auth(cred), "-dc-ip", dc, "-ns", dc],
-                             timeout=240, raw_path=out_dir / "adcs.txt")
+                             timeout=300, raw_path=out_dir / "adcs.txt", cwd=out_dir)
         if res.skipped:
             return []
+        jfiles = sorted(out_dir.glob("*Certipy.json"))
+        if not jfiles:
+            self.log().warning("certipy JSON çıktısı yok — ADCS bulgusu üretilmedi (bkz. adcs.txt)")
+            return []
+        try:
+            escs = parse_certipy_json(json.loads(jfiles[0].read_text(encoding="utf-8")))
+        except (ValueError, OSError) as e:
+            self.log().warning("certipy JSON okunamadı: %s", e)
+            return []
         out = []
-        for n in sorted(parse_esc(res.stdout + res.stderr)):
+        for n in sorted(escs):
             kb = f"adcs-esc{n}"
             entry = get_entry(kb)
             if not ctx.plugin_enabled(kb):
                 continue
             sev = Severity(entry["severity"]) if entry else Severity.high
             title = entry["title"] if entry else f"ADCS ESC{n} zafiyetli şablon/CA"
+            objs = sorted(set(escs[n]))
             out.append(Finding(
-                host=dc, phase=self.name, category="vuln", title=title,
+                host=dc, phase=self.name, category="vuln",
+                title=f"{title} — {len(objs)} nesne",
                 severity=sev, confidence=Confidence.probable,
                 exploitable=Exploitable.manual, manual_followup=True,
                 source_tool="certipy", kb_id=kb if entry else None,
-                evidence_path=str((out_dir / "adcs.txt").as_posix()),
-                notes=f"certipy ESC{n} işaretledi — sömürü manuel (katalog)."))
+                evidence_path=str(jfiles[0].as_posix()),
+                notes=(f"certipy ESC{n} — etkilenen şablon/CA ve nedeni (sömürü manuel):\n"
+                       + "\n".join(objs))))
         return out
+
+    # ── LDAP signing / channel binding (nxc ldap banner'ı) ──
+    def _ldap_signing(self, ctx, cred, out_dir):
+        if not ctx.plugin_enabled("ldap-signing-disabled"):
+            return []
+        nxc = nxc_binary()
+        dcs = [d for d in ctx.inventory.dc_candidates() if ctx.scope.is_allowed(d)]
+        if not nxc or not dcs:
+            return []
+        res = ctx.runner.run([nxc, "ldap", *dcs, *nxc_auth(cred)], timeout=120,
+                             raw_path=out_dir / "ldap_signing.txt")
+        if res.skipped:
+            return []
+        weak = []
+        for ip, st in sorted(parse_ldap_banner(res.stdout + res.stderr).items()):
+            # Yalnız açıkça 'None' = signing ZORUNLU DEĞİL; başka/boş değer → bulgu yok
+            if st["signing"].lower() == "none":
+                weak.append(f"{ip}  signing={st['signing']}  channel binding={st['channel_binding'] or '?'}")
+        if not weak:
+            return []
+        return [Finding(
+            host="scope", port=389, phase=self.name, category="config",
+            title=f"LDAP signing zorunlu değil: {len(weak)} DC",
+            severity=Severity.high, confidence=Confidence.detected,
+            exploitable=Exploitable.manual, manual_followup=True,
+            source_tool="netexec", kb_id="ldap-signing-disabled",
+            evidence_path=str((out_dir / "ldap_signing.txt").as_posix()),
+            notes=("Coerce edilen bir makine hesabı DC'nin LDAP'ına NTLM relay edilebilir "
+                   "(RBCD / Shadow Credentials / hesap ekleme — MANUEL). channel binding="
+                   "Never ise LDAPS'e relay de mümkün. DC'ler:\n" + "\n".join(weak)))]
+
+    def _dc_accounts(self, ctx, dc, cred, out_dir) -> set[str]:
+        """DC makine hesapları (BÜYÜK harf, '$' ile). Önce LDAP SERVER_TRUST
+        sorgusu; olmazsa kapsamdaki DC adaylarının SMB banner adları."""
+        names = set()
+        for o in ldap_query(ctx, dc, cred, _DC_FILTER, ["sAMAccountName"],
+                            out_dir / "dc_accounts.txt"):
+            for v in o.get("samaccountname", []):
+                names.add(v.strip().upper())
+        if not names:
+            for ip in ctx.inventory.dc_candidates():
+                h = ctx.inventory.hosts.get(ip)
+                if h and h.hostname:
+                    names.add(h.hostname.upper().rstrip("$") + "$")
+        return names
 
     # ── Delegasyon (impacket-findDelegation) ──
     def _delegation(self, ctx, dc, cred, out_dir):
@@ -441,11 +535,13 @@ class ADModule(Module):
                 con.append((acct, dtype, rights))
         out = []
         if unc and ctx.plugin_enabled("unconstrained-delegation"):
-            unc = sorted(set(unc))
-            lines = []
-            for a in unc:
-                lines.append(f"{a}  (makine hesabı — DC ise beklenen, üye sunucu ise kritik)"
-                             if a.endswith("$") else a)
+            # DC'lerin makine hesapları HER ZAMAN unconstrained'dir (beklenen) →
+            # her taramada gürültü olmasın diye elenir.
+            dc_accts = self._dc_accounts(ctx, dc, cred, out_dir)
+            unc = sorted({a for a in unc if a.upper() not in dc_accts})
+            lines = [f"{a}  (üye sunucu/istemci makine hesabı — kritik)" if a.endswith("$")
+                     else f"{a}  (kullanıcı/servis hesabı)" for a in unc]
+        if unc and ctx.plugin_enabled("unconstrained-delegation"):
             out.append(Finding(
                 host=dc, phase=self.name, category="config",
                 title=f"Unconstrained delegation: {len(unc)} hesap",
@@ -453,8 +549,8 @@ class ADModule(Module):
                 exploitable=Exploitable.manual, manual_followup=True,
                 source_tool="impacket", kb_id="unconstrained-delegation",
                 evidence_path=ev,
-                notes=("Bilet hırsızlığı — coercion ile DC TGT (manuel). "
-                       "Etkilenen hesaplar:\n" + "\n".join(lines))))
+                notes=("Bilet hırsızlığı — coercion ile DC TGT (manuel). DC hesapları "
+                       "(beklenen) hariç tutuldu. Etkilenen hesaplar:\n" + "\n".join(lines))))
         if con and ctx.plugin_enabled("constrained-delegation"):
             con = sorted(set(con))
             lines = [f"{a}  [{d}] → {r}" for a, d, r in con]
@@ -482,24 +578,18 @@ class ADModule(Module):
             return []
         ev = str((out_dir / "descriptions.txt").as_posix())
         items = parse_descriptions(res.stdout + res.stderr)
-        out = []
-        for user, desc in items[:_CAP]:
-            out.append(Finding(
-                host=dc, phase=self.name, category="cred",
-                title=f"LDAP description'da olası parola: {user}",
-                severity=Severity.medium, confidence=Confidence.probable,
-                exploitable=Exploitable.manual, manual_followup=True,
-                source_tool="netexec", kb_id="description-password",
-                evidence_path=ev, notes=f"description: {desc}"))
-        if len(items) > _CAP:
-            out.append(Finding(
-                host=dc, phase=self.name, category="cred",
-                title=f"+{len(items) - _CAP} description'da olası parola daha",
-                severity=Severity.medium, confidence=Confidence.probable,
-                exploitable=Exploitable.manual, manual_followup=True,
-                source_tool="netexec", kb_id="description-password", evidence_path=ev,
-                notes="Diğer kullanıcılar: " + summarize([u for u, _ in items[_CAP:]], 40)))
-        return out
+        if not items:
+            return []
+        # TEK konsolide bulgu
+        lines = [f"{u}: {d}" for u, d in sorted(items, key=lambda x: x[0].lower())]
+        return [Finding(
+            host=dc, phase=self.name, category="cred",
+            title=f"LDAP description'da olası parola: {len(items)} hesap",
+            severity=Severity.medium, confidence=Confidence.probable,
+            exploitable=Exploitable.manual, manual_followup=True,
+            source_tool="netexec", kb_id="description-password", evidence_path=ev,
+            notes="Açıklama alanı parola içeriyor olabilir (doğrula). Kullanıcı: açıklama\n"
+                  + _cap_lines(lines))]
 
     # ── LAPS okuma yetkisi (nxc -M laps) ──
     def _laps(self, ctx, dc, cred, out_dir):
@@ -512,19 +602,18 @@ class ADModule(Module):
                              timeout=120, raw_path=out_dir / "laps.txt")
         if res.skipped:
             return []
-        txt = res.stdout + res.stderr
-        # Okunabilir LAPS parolası varsa nxc parolayı/işareti gösterir
-        if re.search(r"(Computer:|ms-?Mcs-?AdmPwd|LAPS? password)", txt, re.I) \
-                and "No result" not in txt and "0 result" not in txt:
-            return [Finding(
-                host=dc, phase=self.name, category="config",
-                title="LAPS parolası okunabilir (fazla yetki)",
-                severity=Severity.high, confidence=Confidence.detected,
-                exploitable=Exploitable.manual, manual_followup=True,
-                source_tool="netexec", kb_id="laps-readable",
-                evidence_path=str((out_dir / "laps.txt").as_posix()),
-                notes="Bu hesap LAPS yerel-admin parolasını okuyabiliyor.")]
-        return []
+        comps = parse_laps(res.stdout + res.stderr)
+        if not comps:
+            return []
+        return [Finding(
+            host=dc, phase=self.name, category="config",
+            title=f"LAPS parolası okunabilir (fazla yetki): {len(comps)} bilgisayar",
+            severity=Severity.high, confidence=Confidence.detected,
+            exploitable=Exploitable.manual, manual_followup=True,
+            source_tool="netexec", kb_id="laps-readable",
+            evidence_path=str((out_dir / "laps.txt").as_posix()),
+            notes=(f"{cred.principal} şu bilgisayarların yerel-admin (LAPS) parolasını "
+                   "okuyabiliyor (parolalar ham çıktıda):\n" + _cap_lines(sorted(comps))))]
 
     # ── gMSA okuma yetkisi (nxc --gmsa) ──
     def _gmsa(self, ctx, dc, cred, out_dir):

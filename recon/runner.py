@@ -14,7 +14,18 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Sequence
 
+from .logging_setup import mask_text
+
 log = logging.getLogger("recon.runner")
+
+
+def _as_text(v) -> str:
+    """TimeoutExpired.stdout, text=True olsa bile BYTES döner → str'ye çevir."""
+    if v is None:
+        return ""
+    if isinstance(v, bytes):
+        return v.decode("utf-8", "replace")
+    return v
 
 
 @dataclass
@@ -55,6 +66,7 @@ class Runner:
         timeout: int = 300,
         raw_path: Optional[Path] = None,
         input_text: Optional[str] = None,
+        cwd: Optional[Path] = None,
     ) -> RunResult:
         cmd = list(cmd)
         tool = cmd[0]
@@ -81,28 +93,37 @@ class Runner:
                     text=True,
                     timeout=timeout,
                     input=input_text,
+                    cwd=str(cwd) if cwd else None,
                 )
             rc, out, err = proc.returncode, proc.stdout, proc.stderr
         except subprocess.TimeoutExpired as e:
             dur = time.time() - start
             log.warning("timeout (%ss): %s", timeout, " ".join(cmd))
             self._audit_write(f"TIMEOUT rc=None dur={dur:.1f}s {' '.join(cmd)}")
-            return RunResult(cmd, None, dur, e.stdout or "", "timeout",
+            out = _as_text(e.stdout)
+            # Zaman aşımında da kısmi çıktıyı kanıt olarak yaz (kayıp olmasın).
+            self._write_raw(raw_path, cmd, out, "(timeout — kısmi çıktı)")
+            return RunResult(cmd, None, dur, out, "", raw_path=raw_path,
                              skipped=False, reason="timeout")
 
         dur = time.time() - start
         self._audit_write(f"END rc={rc} dur={dur:.1f}s {tool}")
-
-        if raw_path is not None:
-            raw_path.parent.mkdir(parents=True, exist_ok=True)
-            raw_path.write_text(
-                f"$ {' '.join(cmd)}\n\n--- STDOUT ---\n{out}\n--- STDERR ---\n{err}\n",
-                encoding="utf-8",
-            )
-
+        self._write_raw(raw_path, cmd, out, err)
         return RunResult(cmd, rc, dur, out, err, raw_path=raw_path)
+
+    @staticmethod
+    def _write_raw(raw_path: Optional[Path], cmd: list[str], out: str, err: str) -> None:
+        if raw_path is None:
+            return
+        raw_path.parent.mkdir(parents=True, exist_ok=True)
+        # Komut satırı ve araçların geri bastığı 'domain\user:Parola' satırları
+        # maskelenir → diske düz metin parola yazılmaz.
+        raw_path.write_text(
+            mask_text(f"$ {' '.join(cmd)}\n\n--- STDOUT ---\n{out}\n--- STDERR ---\n{err}\n"),
+            encoding="utf-8",
+        )
 
     def _audit_write(self, line: str) -> None:
         ts = time.strftime("%Y-%m-%d %H:%M:%S")
         with self._audit.open("a", encoding="utf-8") as fh:
-            fh.write(f"{ts} {line}\n")
+            fh.write(f"{ts} {mask_text(line)}\n")

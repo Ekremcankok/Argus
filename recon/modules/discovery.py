@@ -25,6 +25,9 @@ class DiscoveryModule(Module):
     intrusive = False
     default_enabled = True
 
+    # Bu modülün ürettiği katalog kaydı (panelde "kodu olan" kontrol)
+    PLUGINS = {"live-hosts"}
+
     def run(self, ctx: ModuleContext) -> list[Finding]:
         log = self.log()
         out_dir = ctx.phase_dir(self.name)

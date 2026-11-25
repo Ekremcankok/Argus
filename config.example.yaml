@@ -25,7 +25,7 @@ output_dir: ./output
 concurrency:
   max_hosts: 8                  # aynı anda PARALEL taranan host (portscan fan-out)
   max_procs: 8                  # GLOBAL eşzamanlı subprocess tavanı (aynı anda açık toplam araç süreci)
-  rate_limit_pps: null          # nmap --min-rate benzeri; null = araç varsayılanı
+  rate_limit_pps: null          # nmap --max-rate (paket/sn ÜST sınırı = fren); null = araç varsayılanı
 
 # ── Lockout koruması: spray/auth denemesi yapan modüller bunu okur.
 #    threshold null ise → spray OTOMATİK ÇALIŞMAZ (operatör onayı şart).

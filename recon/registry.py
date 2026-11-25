@@ -29,6 +29,17 @@ def get_module(name: str) -> Type[Module]:
     return _REGISTRY[name]
 
 
+def implemented_plugins() -> set[str]:
+    """Herhangi bir modülün GERÇEKTEN çalıştırdığı kb_id'ler.
+
+    Katalogda olup bu kümede olmayan kayıtların kontrol kodu yoktur; panelde
+    seçilebilir gösterilmezler (seçilse de hiçbir şey çalışmazdı)."""
+    out: set[str] = set()
+    for m in _REGISTRY.values():
+        out |= set(getattr(m, "PLUGINS", set()) or set())
+    return out
+
+
 def module_metadata() -> list[dict]:
     """Panel tik listesi için serileştirilebilir metadata."""
     return [

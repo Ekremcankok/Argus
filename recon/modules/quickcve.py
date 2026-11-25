@@ -15,21 +15,53 @@ Kontroller:
 from __future__ import annotations
 
 import re
-import shutil
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Optional
 
 from ..findings import Finding, Severity, Confidence, Exploitable
 from ..registry import register
+from ._tools import (nxc_binary as _nxc_binary, nxc_auth, run_chunked,
+                     coverage_finding, strip_ansi)
 from .base import Module, ModuleContext
 
+_RE_IP = re.compile(r"\b(\d{1,3}(?:\.\d{1,3}){3})\b")
 
-def _nxc_binary() -> Optional[str]:
-    for name in ("nxc", "netexec", "crackmapexec"):
-        if shutil.which(name):
-            return name
-    return None
+
+def parse_ms17010_hosts(xml_text: str) -> list[str]:
+    """Çok-hedefli nmap smb-vuln-ms17-010 XML'inden ZAFİYETLİ host IP'leri."""
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError:
+        return []
+    out = []
+    for host in root.iter("host"):
+        ip = next((a.get("addr") for a in host.findall("address")
+                   if a.get("addrtype") == "ipv4"), None)
+        if not ip:
+            continue
+        for script in host.iter("script"):
+            o = script.get("output", "") or ""
+            if "ms17-010" in script.get("id", "") and "VULNERABLE" in o \
+                    and "NOT VULNERABLE" not in o:
+                out.append(ip)
+                break
+    return out
+
+
+def parse_nxc_vuln_hosts(output: str) -> list[str]:
+    """Çok-hostlu nxc -M <modül> çıktısından ZAFİYETLİ IP'ler (satır bazlı).
+
+    'NOT VULNERABLE' içeren satırlar elenir; IP'si olmayan satırlar sayılmaz."""
+    out = []
+    for line in strip_ansi(output).splitlines():
+        up = line.upper()
+        if "VULNERABLE" not in up or "NOT VULNERABLE" in up:
+            continue
+        m = _RE_IP.search(line)
+        if m and m.group(1) not in out:
+            out.append(m.group(1))
+    return out
 
 
 def parse_ms17010_vulnerable(xml_text: str) -> bool:
@@ -102,6 +134,7 @@ class QuickCVEModule(Module):
         log = self.log()
         out_dir = ctx.phase_dir(self.name)
         findings: list[Finding] = []
+        self._cov: list = []   # zaman aşımı kapsam uyarıları
 
         if ctx.plugin_enabled("ms17-010"):
             findings += self._ms17010(ctx, out_dir)
@@ -120,24 +153,32 @@ class QuickCVEModule(Module):
                                        "noPac (CVE-2021-42278/42287) zafiyetli", Severity.high,
                                        "DC", dc_only=True)
 
+        findings += [c for c in self._cov if c is not None]
         log.info("%d hızlı-CVE bulgusu", len(findings))
         ctx.progress(self.name, f"{len(findings)} bulgu")
         return findings
 
     # ── MS17-010 (nmap NSE) → TEK konsolide bulgu ──
+    # Host başına ayrı nmap yerine parça başına TEK nmap (çok hedef) — 500 hostta
+    # 500 komut yerine ~16; nmap hostları kendi içinde paralel tarar.
     def _ms17010(self, ctx: ModuleContext, out_dir: Path) -> list[Finding]:
-        vuln = []
-        for ip in ctx.inventory.hosts_with_port(445):
-            ctx.scope.assert_allowed(ip)
-            xmlp = out_dir / f"{ip}_ms17010.xml"
-            cmd = ["nmap", "-Pn", "-p445", "--script", "smb-vuln-ms17-010",
-                   "-oX", str(xmlp), ip]
-            res = ctx.runner.run(cmd, timeout=180, raw_path=out_dir / f"{ip}_ms17010.txt")
-            if res.skipped or not xmlp.exists():
-                continue
-            if parse_ms17010_vulnerable(xmlp.read_text(encoding="utf-8", errors="ignore")):
-                vuln.append(ip)
-                self.log().warning("MS17-010 zafiyetli: %s", ip)
+        hosts = [ip for ip in ctx.inventory.hosts_with_port(445) if ctx.scope.is_allowed(ip)]
+        vuln: list[str] = []
+        xmls: list[Path] = []
+
+        def build(part: list[str]) -> list[str]:
+            xmlp = out_dir / f"ms17010_{len(xmls) + 1}.xml"
+            xmls.append(xmlp)
+            return ["nmap", "-Pn", "-n", "-p445", "--script", "smb-vuln-ms17-010",
+                    "--host-timeout", "120s", "-oX", str(xmlp), *part]
+
+        r = run_chunked(ctx, hosts, build, out_dir, "ms17010", timeout=420)
+        self._cov.append(coverage_finding(self.name, "MS17-010", r.unchecked, r.evidence))
+        for xmlp in xmls:
+            if xmlp.exists():
+                vuln += parse_ms17010_hosts(xmlp.read_text(encoding="utf-8", errors="ignore"))
+        for ip in vuln:
+            self.log().warning("MS17-010 zafiyetli: %s", ip)
         if not vuln:
             return []
         vuln = sorted(vuln)
@@ -178,7 +219,6 @@ class QuickCVEModule(Module):
                   + "\n".join(vuln))]
 
     def _auth(self, ctx):
-        from ._tools import nxc_auth
         return nxc_auth(ctx.primary_credential())
 
     # ── SMBGhost (CVE-2020-0796) yüzeyi: nxc smbghost (SMB 3.1.1 + compression) ──
@@ -186,17 +226,14 @@ class QuickCVEModule(Module):
         nxc = _nxc_binary()
         if not nxc:
             return []
-        vuln = []
-        for ip in ctx.inventory.hosts_with_port(445):  # 445 kapalıysa bakma
-            if not ctx.scope.is_allowed(ip):
-                continue
-            cmd = [nxc, "smb", ip, "-u", "", "-p", "", "-M", "smbghost"]
-            res = ctx.runner.run(cmd, timeout=120, raw_path=out_dir / f"{ip}_smbghost.txt")
-            if res.skipped:
-                continue
-            if parse_nxc_vulnerable(res.stdout + res.stderr):
-                vuln.append(ip)
-                self.log().warning("SMBGhost yüzeyi: %s", ip)
+        hosts = [ip for ip in ctx.inventory.hosts_with_port(445) if ctx.scope.is_allowed(ip)]
+        r = run_chunked(ctx, hosts,
+                        lambda part: [nxc, "smb", *part, "-u", "", "-p", "", "-M", "smbghost"],
+                        out_dir, "smbghost", timeout=180)
+        self._cov.append(coverage_finding(self.name, "SMBGhost", r.unchecked, r.evidence))
+        vuln = [ip for ip in parse_nxc_vuln_hosts(r.text) if ip in hosts]
+        for ip in vuln:
+            self.log().warning("SMBGhost yüzeyi: %s", ip)
         if not vuln:
             return []
         vuln = sorted(vuln)
@@ -250,17 +287,15 @@ class QuickCVEModule(Module):
             return []
         targets = (ctx.inventory.dc_candidates() if dc_only
                    else ctx.inventory.hosts_with_port(port or 445))
-        vuln = []
-        for ip in targets:
-            if not ctx.scope.is_allowed(ip):
-                continue
-            cmd = [nxc, "smb", ip, *self._auth(ctx), "-M", module]
-            res = ctx.runner.run(cmd, timeout=180, raw_path=out_dir / f"{ip}_{module}.txt")
-            if res.skipped:
-                continue
-            if parse_nxc_vulnerable(res.stdout + res.stderr):
-                vuln.append(ip)
-                self.log().warning("%s zafiyetli: %s", kb, ip)
+        targets = [ip for ip in targets if ctx.scope.is_allowed(ip)]
+        auth = self._auth(ctx)
+        r = run_chunked(ctx, targets,
+                        lambda part: [nxc, "smb", *part, *auth, "-M", module],
+                        out_dir, module, timeout=180)
+        self._cov.append(coverage_finding(self.name, module, r.unchecked, r.evidence))
+        vuln = [ip for ip in parse_nxc_vuln_hosts(r.text) if ip in targets]
+        for ip in vuln:
+            self.log().warning("%s zafiyetli: %s", kb, ip)
         if not vuln:
             return []
         vuln = sorted(vuln)

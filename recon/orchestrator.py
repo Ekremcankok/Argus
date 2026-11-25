@@ -7,6 +7,7 @@ fazları atla), temiz durdurma (Ctrl+C state'i korur).
 from __future__ import annotations
 
 import datetime as dt
+import json
 import logging
 from pathlib import Path
 from typing import Callable, Optional
@@ -62,6 +63,16 @@ class Orchestrator:
             self.inventory.add_dc_hint(config.dc)
             log.info("DC ipucu (config): %s — port tespitinden bağımsız DC adayı", config.dc)
         self.state = RunState(self.run_dir / "state.json")
+        # Resume: tamamlanmış fazlar atlanacağı için onların ürettiği envanteri
+        # (canlı host, port, rol, signing, paylaşım) diskteki snapshot'tan geri yükle.
+        # Aksi halde keşif atlanınca envanter boş kalır, sonraki modüller "host yok" der.
+        inv_path = self.run_dir / "inventory.json"
+        if self.state.snapshot().get("completed") and inv_path.exists():
+            try:
+                self.inventory.load_snapshot(json.loads(inv_path.read_text(encoding="utf-8")))
+                log.info("resume: envanter geri yüklendi (%d host)", len(self.inventory.hosts))
+            except (ValueError, OSError) as e:
+                log.warning("resume: inventory.json okunamadı (%s) — envanter boş", e)
 
     # ── modül seçimi ────────────────────────────────────────────
     def _is_selected(self, mod_cls) -> bool:
@@ -91,6 +102,11 @@ class Orchestrator:
     def stop(self) -> None:
         """Kill-switch: çalışan döngü bir sonraki modülde temiz durur."""
         self._stop = True
+
+    def _write_inventory(self) -> None:
+        (self.run_dir / "inventory.json").write_text(
+            json.dumps(self.inventory.snapshot(), ensure_ascii=False, indent=2),
+            encoding="utf-8")
 
     # ── ana döngü ───────────────────────────────────────────────
     def run(self) -> dict:
@@ -147,15 +163,14 @@ class Orchestrator:
                 continue
 
             self.store.add_many(findings)
+            # Envanteri her fazdan sonra yaz: tarama kesilse de resume onu bulur.
+            self._write_inventory()
             self.state.mark_completed(name, {"findings": len(findings)})
             self._progress(name, "done", f"{len(findings)} bulgu")
 
         # makine-okur export
         self.store.export_jsonl(self.run_dir / "findings.jsonl")
-        (self.run_dir / "inventory.json").write_text(
-            __import__("json").dumps(self.inventory.snapshot(), ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        self._write_inventory()
         summary = {
             "run_dir": str(self.run_dir),
             "severity_counts": self.store.counts_by_severity(),

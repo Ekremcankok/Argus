@@ -13,7 +13,7 @@ from typing import Optional
 
 from ..findings import Finding, Severity, Confidence, Exploitable
 from ..registry import register
-from ._tools import nxc_binary, nxc_auth
+from ._tools import nxc_binary, nxc_auth, run_chunked, coverage_finding
 from .base import Module, ModuleContext
 
 _IP = re.compile(r"(\d{1,3}(?:\.\d{1,3}){3})")
@@ -46,12 +46,12 @@ class PoisonModule(Module):
     name = "poison"
     label = "Zehirleme / Relay Yüzeyi"
     phase = 6
-    description = ("Relay/coercion yüzeyi tespiti: WebDAV + signing=false relay "
-                   "hedefleri. Aktif zehirleme/relay MANUEL (operatör).")
+    description = ("Relay/coercion yüzeyi tespiti: WebDAV (HTTP coercion). "
+                   "Aktif zehirleme/relay MANUEL (operatör).")
     intrusive = False
     default_enabled = True
 
-    PLUGINS = {"webdav-enabled", "smb-signing-disabled"}
+    PLUGINS = {"webdav-enabled"}
 
     def requires(self, ctx: ModuleContext) -> Optional[str]:
         if not ctx.inventory.hosts_with_port(445):
@@ -72,13 +72,17 @@ class PoisonModule(Module):
         # 1) WebDAV (WebClient) — HTTP coercion/relay yüzeyi → TEK konsolide bulgu
         if ctx.plugin_enabled("webdav-enabled"):
             cred = ctx.primary_credential()
-            res = ctx.runner.run([nxc, "smb", *hosts, *nxc_auth(cred), "-M", "webdav"],
-                                 timeout=180, raw_path=out_dir / "webdav.txt")
-            if not res.skipped:
-                wd = sorted({ip for ip in parse_webdav(res.stdout + res.stderr)
+            wr = run_chunked(ctx, hosts,
+                             lambda part: [nxc, "smb", *part, *nxc_auth(cred), "-M", "webdav"],
+                             out_dir, "webdav", timeout=180)
+            cov = coverage_finding(self.name, "WebDAV/WebClient", wr.unchecked, wr.evidence)
+            if cov:
+                findings.append(cov)
+            if wr.ran:
+                wd = sorted({ip for ip in parse_webdav(wr.text)
                              if ctx.scope.is_allowed(ip)})
                 if wd:
-                    ev = str((out_dir / "webdav.txt").as_posix())
+                    ev = wr.evidence
                     findings.append(Finding(
                         host="scope", port=445, phase=self.name, category="config",
                         title=f"WebClient (WebDAV) etkin: {len(wd)} host",
@@ -88,18 +92,8 @@ class PoisonModule(Module):
                         notes=("HTTP coercion → relay yüzeyi (relay MANUEL). "
                                "WebClient etkin hostlar:\n" + "\n".join(wd))))
 
-        # 2) Relay hedef konsolidasyonu (signing=false; smb modülünden)
-        relay = [h for h in ctx.inventory.relay_targets() if ctx.scope.is_allowed(h)]
-        if relay and ctx.plugin_enabled("smb-signing-disabled"):
-            findings.append(Finding(
-                host="scope", phase=self.name, category="config",
-                title=f"NTLM relay için hazır {len(relay)} hedef (signing kapalı)",
-                severity=Severity.high, confidence=Confidence.detected,
-                exploitable=Exploitable.manual, manual_followup=True,
-                source_tool="recon", kb_id="smb-signing-disabled",
-                evidence_path=str((out_dir).as_posix()),
-                notes=("Relay hedefleri: " + ", ".join(sorted(relay)) +
-                       ". Coercion (PetitPotam/printerbug) + ntlmrelayx MANUEL koordinasyon.")))
+        # Not: signing=false relay hedefleri smb modülünün "SMB signing kapalı"
+        # bulgusunda zaten tek konsolide bulgu olarak var; burada tekrarlanmaz.
 
         log.info("%d relay-yüzeyi bulgusu", len(findings))
         ctx.progress(self.name, f"{len(findings)} bulgu")

@@ -326,16 +326,18 @@ class BloodHoundModule(Module):
             notes=(f"JSON: {out_dir.as_posix()} — BloodHound GUI'ye import edip "
                    "saldırı yollarını MANUEL incele. Aşağıdaki bulgular öne çıkanlar.")))
 
-        if ctx.plugin_enabled("dcsync-rights"):
-            for name in analysis["dcsync"]:
-                findings.append(Finding(
-                    host=dc, phase=self.name, category="config",
-                    title=f"DCSync hakkı: {name}",
-                    severity=Severity.critical, confidence=Confidence.detected,
-                    exploitable=Exploitable.manual, manual_followup=True,
-                    source_tool="bloodhound-python", kb_id="dcsync-rights",
-                    evidence_path=ev,
-                    notes="Replikasyon hakkı → tüm hash'ler (secretsdump MANUEL)."))
+        if ctx.plugin_enabled("dcsync-rights") and analysis["dcsync"]:
+            # TEK konsolide bulgu (principal başına ayrı bulgu değil)
+            dl = sorted(analysis["dcsync"])
+            findings.append(Finding(
+                host=dc, phase=self.name, category="config",
+                title=f"DCSync hakkı (varsayılan dışı): {len(dl)} principal",
+                severity=Severity.critical, confidence=Confidence.detected,
+                exploitable=Exploitable.manual, manual_followup=True,
+                source_tool="bloodhound-python", kb_id="dcsync-rights",
+                evidence_path=ev,
+                notes=("Replikasyon hakkı → tüm hash'ler (secretsdump MANUEL). "
+                       "Varsayılan dışı DCSync sahipleri:\n" + "\n".join(dl))))
 
         if ctx.plugin_enabled("acl-abuse"):
             acls = analysis["acls"]   # (principal, p_sid, right, target, t_sid)
@@ -359,16 +361,17 @@ class BloodHoundModule(Module):
                     notes=("Yetki yükseltme yolları — principal [SID] --hak--> hedef [SID]:\n"
                            + "\n".join(lines))))
 
-        if ctx.plugin_enabled("shadow-credentials"):
-            for principal, target in analysis["shadow"]:
-                findings.append(Finding(
-                    host=dc, phase=self.name, category="config",
-                    title=f"Shadow Credentials yüzeyi: {principal} → {target}",
-                    severity=Severity.high, confidence=Confidence.detected,
-                    exploitable=Exploitable.manual, manual_followup=True,
-                    source_tool="bloodhound-python", kb_id="shadow-credentials",
-                    evidence_path=ev,
-                    notes=f"{principal}, {target} msDS-KeyCredentialLink'ine yazabilir (PKINIT)."))
+        if ctx.plugin_enabled("shadow-credentials") and analysis["shadow"]:
+            sl = sorted(f"{p} → {t}" for p, t in analysis["shadow"])
+            findings.append(Finding(
+                host=dc, phase=self.name, category="config",
+                title=f"Shadow Credentials yüzeyi: {len(sl)} ilişki",
+                severity=Severity.high, confidence=Confidence.detected,
+                exploitable=Exploitable.manual, manual_followup=True,
+                source_tool="bloodhound-python", kb_id="shadow-credentials",
+                evidence_path=ev,
+                notes=("msDS-KeyCredentialLink'e yazabilen principal → hedef (PKINIT, "
+                       "MANUEL):\n" + "\n".join(sl))))
 
         # ── Saldırı yolu: elimizdeki/geniş principal → yüksek-değer hedef ──
         if ctx.plugin_enabled("attack-path"):
@@ -395,17 +398,22 @@ class BloodHoundModule(Module):
                     if sid not in starts:
                         starts.append(sid)
             paths = compute_paths(objs, list(dict.fromkeys(starts)), sid2name)
-            for p in paths:
-                chain = f"{p['start']}"
-                for frm, lbl, to in p["hops"]:
-                    chain += f"\n   --{lbl}--> {to}"
+            if paths:
+                # TEK konsolide bulgu: tüm yollar (en kısadan uzuna) tek notta
+                blocks = []
+                for i, p in enumerate(paths, 1):
+                    chain = f"{i}) {p['start']} → {p['kind']} ({len(p['hops'])} adım)\n   {p['start']}"
+                    for frm, lbl, to in p["hops"]:
+                        chain += f"\n   --{lbl}--> {to}"
+                    blocks.append(chain)
+                shortest = min(len(p["hops"]) for p in paths)
                 findings.append(Finding(
                     host=dc, phase=self.name, category="config",
-                    title=f"Saldırı yolu: {p['start']} → {p['kind']} ({len(p['hops'])} adım)",
+                    title=f"Saldırı yolları: {len(paths)} yol (en kısa {shortest} adım)",
                     severity=Severity.critical, confidence=Confidence.detected,
                     exploitable=Exploitable.manual, manual_followup=True,
                     source_tool="bloodhound-python", kb_id="attack-path",
-                    evidence_path=ev, notes="Zincir:\n" + chain))
+                    evidence_path=ev, notes="Zincirler:\n" + "\n\n".join(blocks)))
             if not paths:
                 # Yol bulunamadı → neden olduğunu açıkça yaz (operatör boşlukta kalmasın)
                 who = ", ".join(start_names) if start_names else cred.principal

@@ -54,6 +54,9 @@ class PortScanModule(Module):
     intrusive = False
     default_enabled = True
 
+    # Bu modülün ürettiği katalog kayıtları (panelde "kodu olan" kontroller)
+    PLUGINS = {"open-ports", "dc-detected", "smb-exposed", "rdp-exposed", "mssql-exposed"}
+
     def run(self, ctx: ModuleContext) -> list[Finding]:
         log = self.log()
         out_dir = ctx.phase_dir(self.name)
@@ -120,8 +123,10 @@ class PortScanModule(Module):
         cmd = ["nmap", "-sV", "-n", "-T4", "--top-ports", "1000",
                "--host-timeout", "180s", "--max-retries", "2",
                "-oX", str(xml_path), ip]
+        # Paket hızı FRENİ: --max-rate üst sınırdır (paket/sn). --min-rate tam tersi
+        # (alt sınır = hızlandırma) olduğundan fren olarak kullanılamaz.
         if ctx.config.concurrency.rate_limit_pps:
-            cmd += ["--min-rate", str(ctx.config.concurrency.rate_limit_pps)]
+            cmd += ["--max-rate", str(ctx.config.concurrency.rate_limit_pps)]
         res = ctx.runner.run(cmd, timeout=240, raw_path=out_dir / f"{ip}.txt")
         if not res.skipped:
             self._parse(xml_path, ctx, ip)
@@ -140,12 +145,15 @@ class PortScanModule(Module):
         osm = host_el.find("os/osmatch")
         if osm is not None:
             h.os = osm.get("name")
+        ostype = None
         for port_el in host_el.findall("ports/port"):
             state = port_el.find("state")
             if state is None or state.get("state") != "open":
                 continue
             portid = int(port_el.get("portid"))
             svc_el = port_el.find("service")
+            if svc_el is not None and svc_el.get("ostype") and not ostype:
+                ostype = svc_el.get("ostype")
             ctx.inventory.add_service(ip, Service(
                 port=portid, proto=port_el.get("protocol", "tcp"),
                 name=svc_el.get("name", "") if svc_el is not None else "",
@@ -155,6 +163,11 @@ class PortScanModule(Module):
             role = _ROLE_PORTS.get(portid)
             if role:
                 ctx.inventory.add_role(ip, role)
+        # -O root ister (yetkisiz nmap tamamen durur) → kullanılmaz. OS yoksa -sV
+        # servis 'ostype' ipucu yazılır; Windows'ta smb modülü banner'dan kesin
+        # sürümü (ör. "Windows Server 2022 Build 20348") sonra üzerine yazar.
+        if not h.os and ostype:
+            h.os = ostype
 
     def _summaries(self, ctx: ModuleContext, out_dir: Path) -> list[Finding]:
         from ._tools import summarize

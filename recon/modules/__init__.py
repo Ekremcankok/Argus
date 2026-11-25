@@ -17,6 +17,7 @@ _BUILTIN = [
     "recon.modules.ad",
     "recon.modules.bloodhound",
     "recon.modules.poison",
+    "recon.modules.sccm",
     "recon.modules.report",
 ]
 

@@ -13,7 +13,7 @@ from typing import Optional
 
 from ..findings import Finding, Severity, Confidence, Exploitable
 from ..registry import register
-from ._tools import nxc_binary, nxc_auth
+from ._tools import nxc_binary, nxc_auth, run_chunked, coverage_finding, strip_ansi
 from .base import Module, ModuleContext
 
 _IP = r"(\d{1,3}(?:\.\d{1,3}){3})"
@@ -21,7 +21,10 @@ _RE_SIGNING = re.compile(r"signing:(True|False)", re.I)
 _RE_SMBV1 = re.compile(r"SMBv1:(True|False)", re.I)
 _RE_NAME = re.compile(r"\(name:([^)]*)\)")
 _RE_DOMAIN = re.compile(r"\(domain:([^)]*)\)")
+_RE_OS = re.compile(r"\[\*\]\s+(.+?)\s+\(name:")
 _RE_LINE_IP = re.compile(_IP)
+_RE_SHARE_ROW = re.compile(r"^SMB\s+" + _IP + r"\s+\d+\s+\S+\s+(.*)$")
+_RE_PERMS = re.compile(r"(READ|WRITE)(,(READ|WRITE))?", re.I)
 # "SMB  <ip>  445  <host>  <Share>  <READ[,WRITE]>  <remark>"
 _RE_SHARE = re.compile(
     r"SMB\s+" + _IP + r"\s+\d+\s+\S+\s+(\S+)\s+(READ(?:,WRITE)?|WRITE(?:,READ)?)\b", re.I)
@@ -41,13 +44,34 @@ def parse_smb_banner(output: str) -> dict[str, dict]:
             continue
         ip = mip.group(1)
         ms, mv = _RE_SIGNING.search(line), _RE_SMBV1.search(line)
+        mo = _RE_OS.search(line)
         hosts[ip] = {
             "signing": (ms.group(1).lower() == "true") if ms else None,
             "smbv1": (mv.group(1).lower() == "true") if mv else None,
             "name": (_RE_NAME.search(line).group(1) if _RE_NAME.search(line) else None),
             "domain": (_RE_DOMAIN.search(line).group(1) if _RE_DOMAIN.search(line) else None),
+            "os": mo.group(1).strip() if mo else None,
         }
     return hosts
+
+
+def parse_all_shares(output: str) -> dict[str, dict[str, str]]:
+    """nxc --shares çıktısındaki TÜM paylaşımlar → {ip: {paylaşım: izin}}.
+
+    İzin sütunu boşsa ("" = görünür ama erişim yok) yine kaydedilir — ör.
+    'SMS_PS1' gibi rol paylaşımları izinsiz görünür ama hostun rolünü ele verir."""
+    out: dict[str, dict[str, str]] = {}
+    for line in strip_ansi(output).splitlines():
+        m = _RE_SHARE_ROW.match(line.strip())
+        if not m:
+            continue
+        ip, body = m.group(1), m.group(2).strip()
+        if not body or body[0] in "[-" or body.startswith("Share "):
+            continue
+        toks = body.split()
+        perms = toks[1].upper() if len(toks) > 1 and _RE_PERMS.fullmatch(toks[1]) else ""
+        out.setdefault(ip, {})[toks[0]] = perms
+    return out
 
 
 def parse_shares(output: str) -> dict[str, list[tuple[str, str]]]:
@@ -108,41 +132,50 @@ class SMBModule(Module):
         hosts = [h for h in ctx.inventory.hosts_with_port(445) if ctx.scope.is_allowed(h)]
         findings: list[Finding] = []
 
-        # 1) Banner: signing + SMBv1 → inventory + KONSOLİDE özet (tam host listesi)
+        # 1) Banner (anonim, ucuz): HER ZAMAN çalışır — signing/SMBv1 bulgularının
+        # yanında envantere OS/hostname/domain yazar (sonraki modüller ve Hostlar
+        # sekmesi bunu kullanır). Parçalı: zaman aşımı kalan hostları gizlemez.
         signing_off, smbv1 = [], []
-        if ctx.plugin_enabled("smb-signing-disabled") or ctx.plugin_enabled("smbv1-enabled"):
-            res = ctx.runner.run([nxc, "smb", *hosts],
-                                 timeout=180, raw_path=out_dir / "banner.txt")
-            ev = str((out_dir / "banner.txt").as_posix())
-            if not res.skipped:
-                for ip, info in parse_smb_banner(res.stdout + res.stderr).items():
-                    if info["signing"] is False:
-                        ctx.inventory.upsert_host(ip).smb_signing = False
-                        signing_off.append(ip)
-                    elif info["signing"] is True:
-                        ctx.inventory.upsert_host(ip).smb_signing = True
-                    if info["smbv1"] is True:
-                        smbv1.append(ip)
-            if signing_off and ctx.plugin_enabled("smb-signing-disabled"):
-                hl = sorted(signing_off)
-                findings.append(self._summary(
-                    f"SMB signing kapalı/zorunlu değil: {len(hl)} host", Severity.high,
-                    "smb-signing-disabled", ev,
-                    "SMB signing OLMAYAN (NTLM relay) hostlar:\n" + "\n".join(hl)))
-            if smbv1 and ctx.plugin_enabled("smbv1-enabled"):
-                sl = sorted(smbv1)
-                findings.append(self._summary(
-                    f"SMBv1 etkin: {len(sl)} host", Severity.high, "smbv1-enabled", ev,
-                    "EternalBlue + downgrade yüzeyi. Etkin hostlar:\n" + "\n".join(sl)))
+        cov = []
+        br = run_chunked(ctx, hosts, lambda part: [nxc, "smb", *part],
+                         out_dir, "banner", timeout=180)
+        ev = br.evidence
+        if br.ran:
+            for ip, info in parse_smb_banner(br.text).items():
+                h = ctx.inventory.upsert_host(ip)
+                h.hostname = info["name"] or h.hostname
+                h.domain = info["domain"] or h.domain
+                h.os = info["os"] or h.os
+                if info["signing"] is False:
+                    h.smb_signing = False
+                    signing_off.append(ip)
+                elif info["signing"] is True:
+                    h.smb_signing = True
+                if info["smbv1"] is True:
+                    smbv1.append(ip)
+            cov.append(coverage_finding(self.name, "SMB banner/signing", br.unchecked, ev))
+        if signing_off and ctx.plugin_enabled("smb-signing-disabled"):
+            hl = sorted(signing_off)
+            findings.append(self._summary(
+                f"SMB signing kapalı/zorunlu değil: {len(hl)} host", Severity.high,
+                "smb-signing-disabled", ev,
+                "SMB signing OLMAYAN (NTLM relay) hostlar:\n" + "\n".join(hl)))
+        if smbv1 and ctx.plugin_enabled("smbv1-enabled"):
+            sl = sorted(smbv1)
+            findings.append(self._summary(
+                f"SMBv1 etkin: {len(sl)} host", Severity.high, "smbv1-enabled", ev,
+                "EternalBlue + downgrade yüzeyi. Etkin hostlar:\n" + "\n".join(sl)))
 
         # 2) NTLM reflection (CVE-2025-33073) — nxc -M ntlm_reflection
         if ctx.plugin_enabled("ntlm-reflection-33073"):
             cred = ctx.primary_credential()
-            res = ctx.runner.run([nxc, "smb", *hosts, *nxc_auth(cred), "-M", "ntlm_reflection"],
-                                 timeout=180, raw_path=out_dir / "ntlm_reflection.txt")
-            if not res.skipped:
-                ev = str((out_dir / "ntlm_reflection.txt").as_posix())
-                vuln = [ip for ip in parse_ntlm_reflection(res.stdout + res.stderr)
+            rr = run_chunked(ctx, hosts,
+                             lambda part: [nxc, "smb", *part, *nxc_auth(cred), "-M", "ntlm_reflection"],
+                             out_dir, "ntlm_reflection", timeout=180)
+            cov.append(coverage_finding(self.name, "NTLM reflection", rr.unchecked, rr.evidence))
+            if rr.ran:
+                ev = rr.evidence
+                vuln = [ip for ip in parse_ntlm_reflection(rr.text)
                         if ctx.scope.is_allowed(ip)]
                 if vuln:
                     findings.append(Finding(
@@ -158,31 +191,33 @@ class SMBModule(Module):
         if any(ctx.plugin_enabled(k) for k in ("null-session", "writable-share", "smb-shares")):
             null_hosts, writable = [], []
             # null (anonim)
-            self._shares(ctx, nxc, hosts, out_dir, None, null_hosts, writable, None)
+            ev_null = self._shares(ctx, nxc, hosts, out_dir, None, null_hosts, writable, None, cov)
             # domain kimliği ile (varsa) → erişilebilir paylaşımları bilgi bulgusu yap
             cred = ctx.primary_credential()
             cred_shares: dict[str, list[tuple[str, str]]] = {}
+            ev_cred = None
             if cred is not None:
-                self._shares(ctx, nxc, hosts, out_dir, cred, null_hosts, writable, cred_shares)
+                ev_cred = self._shares(ctx, nxc, hosts, out_dir, cred, null_hosts, writable,
+                                       cred_shares, cov)
 
             if null_hosts and ctx.plugin_enabled("null-session"):
                 nh = sorted(set(null_hosts))
                 findings.append(self._summary(
                     f"Null session (anonim SMB): {len(nh)} host", Severity.medium,
-                    "null-session", str((out_dir / "shares_null.txt").as_posix()),
+                    "null-session", ev_null,
                     "Anonim paylaşım erişimi olan hostlar:\n" + "\n".join(nh)))
 
             if writable and ctx.plugin_enabled("writable-share"):
                 wl = sorted(set(writable))
                 findings.append(self._summary(
                     f"Yazılabilir SMB paylaşımı: {len(wl)} adet", Severity.high,
-                    "writable-share", str((out_dir / "shares_cred.txt").as_posix()),
+                    "writable-share", ev_cred or ev_null,
                     "Yazılabilir paylaşımlar (host:share):\n" + "\n".join(wl)))
 
             # Domain kimliğiyle erişilebilir paylaşımlar → TEK konsolide bulgu
             # (host başına ayrı bulgu değil; her host kendi bölümünde listelenir)
             if cred_shares and ctx.plugin_enabled("smb-shares"):
-                evc = str((out_dir / "shares_cred.txt").as_posix())
+                evc = ev_cred
                 hws = [ip for ip in sorted(cred_shares) if cred_shares[ip]]
                 if hws:
                     total = sum(len(cred_shares[ip]) for ip in hws)
@@ -201,6 +236,9 @@ class SMBModule(Module):
                                "(IPC$/print$ hariç), host başına:\n\n"
                                + "\n\n".join(sections))))
 
+        # Zaman aşımı yüzünden kontrol edilemeyen hostlar → kontrol başına tek uyarı
+        findings += [c for c in cov if c is not None]
+
         log.info("%d SMB bulgusu", len(findings))
         ctx.progress(self.name, f"{len(findings)} bulgu")
         return findings
@@ -211,13 +249,22 @@ class SMBModule(Module):
                        exploitable=Exploitable.manual, manual_followup=True,
                        source_tool="netexec", kb_id=kb, evidence_path=ev, notes=notes)
 
-    def _shares(self, ctx, nxc, hosts, out_dir, cred, null_hosts, writable, collect) -> None:
+    def _shares(self, ctx, nxc, hosts, out_dir, cred, null_hosts, writable, collect, cov):
         tag = "cred" if cred else "null"
-        res = ctx.runner.run([nxc, "smb", *hosts, *nxc_auth(cred), "--shares"],
-                             timeout=240, raw_path=out_dir / f"shares_{tag}.txt")
-        if res.skipped:
-            return
-        for ip, lst in parse_shares(res.stdout + res.stderr).items():
+        sr = run_chunked(ctx, hosts,
+                         lambda part: [nxc, "smb", *part, *nxc_auth(cred), "--shares"],
+                         out_dir, f"shares_{tag}", timeout=240)
+        if not sr.ran:
+            return None
+        cov.append(coverage_finding(
+            self.name, f"SMB paylaşımları ({'kimlikli' if cred else 'anonim'})",
+            sr.unchecked, sr.evidence))
+        # Tüm paylaşımları (izinsiz olanlar dahil) envantere yaz → SCCM vb. rol
+        # tespiti aynı taramayı tekrarlamadan okur.
+        for ip, shares in parse_all_shares(sr.text).items():
+            if ctx.scope.is_allowed(ip):
+                ctx.inventory.set_shares(ip, shares)
+        for ip, lst in parse_shares(sr.text).items():
             if not ctx.scope.is_allowed(ip):
                 continue
             if cred is None:
@@ -227,3 +274,4 @@ class SMBModule(Module):
             for s, p in lst:
                 if "WRITE" in p:
                     writable.append(f"{ip}:{s}")
+        return sr.evidence

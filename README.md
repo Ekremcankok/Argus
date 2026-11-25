@@ -13,10 +13,12 @@ _aday_ bulgudur; doğrulama ve sömürü kararı operatöre aittir.
 ## Öne çıkanlar
 
 - **Uçtan uca pipeline** — canlı host keşfi → port/servis → servis-bazlı enum → hızlı CVE
-  tespiti → SMB → Active Directory (Kerberoast, AS-REP, ADCS ESC1–17, delegation, GPP, LAPS/gMSA) →
-  BloodHound ACL/DCSync + saldırı yolu analizi → relay/coercion yüzeyi.
+  tespiti → SMB → Active Directory (Kerberoast, AS-REP, ADCS ESC1–17, delegation, GPP, LAPS/gMSA,
+  LDAP signing) → BloodHound ACL/DCSync + saldırı yolu analizi → relay/coercion yüzeyi →
+  SCCM/MECM (site/MP/DP keşfi, HTTP MP, PXE, DP içeriği, site devralma relay zincirleri).
 - **Kimlikli ve anonim tarama** — domain kullanıcısıyla derin AD numaralandırma ya da
-  yalnız ağ seviyesinde tespit. Parola düz metin tutulmaz; bellekte kalır, loglarda maskelenir.
+  yalnız ağ seviyesinde tespit. Parola düz metin tutulmaz; bellekte kalır, log, audit ve
+  ham araç çıktılarında maskelenir. Yanlış kimlikte tek deneme yapılır (hesap kilitlenmez).
 - **Web paneli** — tarama oluştur/başlat, canlı ilerleme, host envanteri, önem dağılımı,
   bulgu başına açıklama · tespit yöntemi · sömürü yolu · çözüm önerisi.
 - **Ölçek dostu** — 1000+ hostluk kapsamlarda bulgular tür bazında konsolide edilir,

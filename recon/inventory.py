@@ -31,6 +31,9 @@ class Host:
     services: dict[int, Service] = field(default_factory=dict)
     roles: set[str] = field(default_factory=set)   # dc, smb, rdp, db, web, ca ...
     smb_signing: Optional[bool] = None               # False → relay hedefi
+    # SMB paylaşımları: ad → izin ("READ", "READ,WRITE" veya "" = görünüyor ama
+    # erişim yok). Sonraki modüller (ör. SCCM rol tespiti) tekrar taramadan okur.
+    shares: dict[str, str] = field(default_factory=dict)
 
     def has_port(self, port: int) -> bool:
         return port in self.services
@@ -110,8 +113,16 @@ class Inventory:
         with self._lock:
             self.found_credentials.append(cred)
 
+    def set_shares(self, ip: str, shares: dict[str, str]) -> None:
+        h = self.upsert_host(ip)
+        with self._lock:
+            for name, perms in shares.items():
+                # Daha yetkili bir taramanın izni (ör. kimlikli READ) korunur
+                if perms or name not in h.shares:
+                    h.shares[name] = perms
+
     def snapshot(self) -> dict:
-        """Panel/rapor için serileştirilebilir özet."""
+        """Panel/rapor için serileştirilebilir özet (resume için de yeterli)."""
         return {
             "hosts": {
                 ip: {
@@ -123,15 +134,42 @@ class Inventory:
                     "smb_signing": h.smb_signing,
                     "ports": sorted(h.services.keys()),
                     "services": {
-                        p: {"name": s.name, "product": s.product, "version": s.version}
+                        p: {"name": s.name, "product": s.product, "version": s.version,
+                            "proto": s.proto}
                         for p, s in h.services.items()
                     },
+                    "shares": dict(h.shares),
                 }
                 for ip, h in self.hosts.items()
             },
+            "dc_hints": sorted(self._dc_hints),
             "found_credentials": [
                 {"name": c.name, "principal": c.principal, "source": c.source,
                  "valid_hosts": c.valid_hosts}
                 for c in self.found_credentials
             ],
         }
+
+    def load_snapshot(self, data: dict) -> None:
+        """snapshot() çıktısından envanteri geri kurar (--resume).
+
+        Keşif/port taraması 'tamamlandı' diye atlandığında sonraki modüller
+        boş envanter yüzünden "host yok" deyip atlanmasın diye gerekli."""
+        with self._lock:
+            for ip, d in (data.get("hosts") or {}).items():
+                h = Host(ip=ip, alive=bool(d.get("alive", True)),
+                         hostname=d.get("hostname"), os=d.get("os"),
+                         domain=d.get("domain"),
+                         roles=set(d.get("roles") or []),
+                         smb_signing=d.get("smb_signing"),
+                         shares=dict(d.get("shares") or {}))
+                for p, s in (d.get("services") or {}).items():
+                    h.services[int(p)] = Service(
+                        port=int(p), proto=s.get("proto", "tcp"), name=s.get("name", ""),
+                        product=s.get("product", ""), version=s.get("version", ""))
+                self.hosts[ip] = h
+            self._dc_hints.update(data.get("dc_hints") or [])
+            for c in data.get("found_credentials") or []:
+                self.found_credentials.append(FoundCredential(
+                    name=c.get("name", ""), principal=c.get("principal", ""),
+                    source=c.get("source", ""), valid_hosts=list(c.get("valid_hosts") or [])))

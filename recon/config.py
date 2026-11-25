@@ -43,7 +43,7 @@ class Concurrency(BaseModel):
     # fazla bu kadar harici süreç (nmap/nxc/impacket...) çalışır. Araç bazlı
     # flood ve "çok fazla cmd açılması" kaynaklı çökmeyi engeller.
     max_procs: int = Field(default=8, ge=1, le=64)
-    # nmap paket hızı freni (--min-rate). null = araç varsayılanı.
+    # nmap paket hızı FRENİ (--max-rate, paket/sn üst sınırı). null = araç varsayılanı.
     rate_limit_pps: Optional[int] = Field(default=None, ge=1)
 
 

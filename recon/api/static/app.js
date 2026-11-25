@@ -5,8 +5,8 @@ const SEV_COLOR = {critical:'#ef4444',high:'#f97316',medium:'#eab308',low:'#22d3
 const CAT_TR = {vuln:'Zafiyet',config:'Yapılandırma',cred:'Kimlik Bilgisi',service:'Servis',info:'Bilgi'};
 const FAM = {discovery:'Keşif',portscan:'Port & Servis',quickcve:'Hızlı CVE',
   smb:'SMB / NetBIOS',ad:'Active Directory',kerberos:'Kerberos',
-  poison:'Ağ Zehirleme / Relay'};
-const FAM_ORDER = ['discovery','portscan','quickcve','smb','ad','kerberos','poison'];
+  poison:'Ağ Zehirleme / Relay',sccm:'SCCM / MECM'};
+const FAM_ORDER = ['discovery','portscan','quickcve','smb','ad','kerberos','poison','sccm'];
 const BASE_MODULES = ['discovery','portscan','report']; // temel keşif + her koşuda rapor
 
 const S = { modules:[], builtNames:new Set(), catalog:[], status:'idle', activeJob:null };
@@ -251,7 +251,9 @@ let _cred=false;             // kimlikli mi
 let _pluginSel=null;         // Set<kb_id> | null(hepsi)
 async function viewNew(){
   setTop('Yeni Tarama','<a href="#/scans">Taramalar</a>');
-  if(!S.catalog.length) S.catalog=await get('/api/catalog');
+  // Yalnız KODU OLAN kontroller listelenir (katalogda bilgi olup kontrolü
+  // yazılmamış kayıtlar seçilebilir görünmesin — seçilse de hiçbir şey çalışmaz).
+  if(!S.catalog.length) S.catalog=(await get('/api/catalog')).filter(e=>e.implemented!==false);
   const d=await get('/api/defaults');
   if(_pluginSel===null){ _pluginSel=new Set(S.catalog.map(e=>e.id)); } // varsayılan: hepsi
   window._defaults=d;
@@ -317,10 +319,10 @@ function renderNewBody(){
             <div class="muted" style="font-size:12px;margin-top:3px">Aynı anda açık toplam araç süreci (global tavan).</div>
           </div>
         </div>
-        <label class="fld">Paket hızı — nmap --min-rate (opsiyonel)</label>
-        <input id="rl" type="number" min="1" max="100000" placeholder="boş = araç varsayılanı"
+        <label class="fld">Paket hızı sınırı — nmap --max-rate (opsiyonel)</label>
+        <input id="rl" type="number" min="1" max="100000" placeholder="boş = sınırsız (araç varsayılanı)"
           value="${f.rl!==undefined?esc(f.rl):(d.rate_limit_pps!=null?d.rate_limit_pps:'')}">
-        <div class="muted" style="font-size:12px;margin-top:3px">Boş bırakılırsa nmap kendi hızını kullanır. Düşük değer = daha yavaş/sessiz.</div>
+        <div class="muted" style="font-size:12px;margin-top:3px">Host başına saniyede gönderilecek EN FAZLA paket (fren). Boş = nmap kendi hızı. Düşük değer = daha yavaş/sessiz.</div>
       </div>`;
   } else if(_newTab==='creds'){
     body.innerHTML=`

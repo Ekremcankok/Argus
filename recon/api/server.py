@@ -24,7 +24,7 @@ from ..config import Config, Mode, ScopeConfig, load_config
 from ..findings import Severity
 from ..logging_setup import register_secret, setup_logging
 from ..modules import load_builtin_modules
-from ..registry import module_metadata
+from ..registry import implemented_plugins, module_metadata
 from ..scope import ScopeError, ScopeGuard
 
 _STATIC = Path(__file__).parent / "static"
@@ -51,7 +51,7 @@ class ScanRequest(BaseModel):
     # ── Performans / eşzamanlılık (panelden ayarlanır; None = config varsayılanı)
     max_hosts: Optional[int] = None            # paralel taranan host sayısı
     max_procs: Optional[int] = None            # global eşzamanlı subprocess tavanı
-    rate_limit_pps: Optional[int] = None       # nmap --min-rate (null = araç varsayılanı)
+    rate_limit_pps: Optional[int] = None       # nmap --max-rate fren (null = araç varsayılanı)
 
 
 @dataclass
@@ -562,7 +562,10 @@ def create_app(base_config_path: str | Path = "config.yaml") -> FastAPI:
     # ── zafiyet kataloğu ──
     @app.get("/api/catalog")
     def catalog():
-        return all_entries()
+        # implemented=False → katalogda bilgi var ama kontrol kodu yok; panel
+        # bunları plugin listesinde göstermez (seçilip hiçbir şey çalışmasın diye).
+        impl = implemented_plugins()
+        return [{**e, "implemented": e["id"] in impl} for e in all_entries()]
 
     @app.get("/api/catalog/categories")
     def catalog_categories():
